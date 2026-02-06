@@ -1,0 +1,1 @@
+{"nom":"Julie","sexe":"Femme","nationalite":"Bénin","telephone":"+229654122800","email":"junie@gmail.com","motDePasse":"Junie"}
