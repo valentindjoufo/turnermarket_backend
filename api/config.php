@@ -1,17 +1,20 @@
 <?php
 /**
- * config.php — Connexion PostgreSQL pour Render
- * Version finale prête à déploiement
+ * config.php — Connexion PostgreSQL pour Render (TurnerMarket)
  */
 
-// 📋 Récupération automatique de DATABASE_URL (Render)
-$url = parse_url(getenv("DATABASE_URL"));
+header("Content-Type: application/json; charset=UTF-8");
 
-$host   = $url["host"] ?? 'localhost';
-$dbname = ltrim($url["path"] ?? '/defaultdb', '/');
-$user   = $url["user"] ?? 'user';
+// 📋 Récupération automatique de DATABASE_URL (Render)
+$databaseUrl = getenv("DATABASE_URL") ?: 'postgresql://turnermarket_user:i4Grt7uENndSqjNbECQp42pr6OJT3Xo4@dpg-d63vg8sr85hc73bgpv50-a/turnermarket_db';
+
+$url = parse_url($databaseUrl);
+
+$host     = $url["host"] ?? 'localhost';
+$port     = $url["port"] ?? 5432;
+$user     = $url["user"] ?? 'postgres';
 $password = $url["pass"] ?? '';
-$port   = $url["port"] ?? 5432;
+$dbname   = ltrim($url["path"] ?? '/defaultdb', '/');
 
 // ⏱️ Log du début de connexion
 error_log("🔌 Tentative de connexion à la base PostgreSQL...");
@@ -19,16 +22,15 @@ $startTime = microtime(true);
 
 try {
     // 🚀 Connexion PDO PostgreSQL
-    $pdo = new PDO(
+    $conn = new PDO(
         "pgsql:host=$host;port=$port;dbname=$dbname",
         $user,
         $password,
         [
-            PDO::ATTR_TIMEOUT => 3,                   // Timeout connexion
+            PDO::ATTR_TIMEOUT => 10,                   // Timeout un peu plus long
             PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION, // Exceptions sur erreurs
             PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC, // Fetch par défaut
             PDO::ATTR_EMULATE_PREPARES => false,      // Pas d'émulation des requêtes préparées
-            // PDO::ATTR_PERSISTENT => true,          // Optionnel : Connexion persistante
         ]
     );
 
@@ -40,7 +42,6 @@ try {
     // ❌ Échec de connexion
     $duration = round((microtime(true) - $startTime) * 1000, 2);
 
-    // 📝 Log détaillé
     error_log("❌ ERREUR BDD PostgreSQL après {$duration}ms:");
     error_log("Code: " . $e->getCode());
     error_log("Message: " . $e->getMessage());
