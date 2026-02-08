@@ -11,7 +11,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
 }
 
 try {
-   require_once __DIR__ . '/config.php';
+   require_once  'config.php';
 
 $input = file_get_contents('php://input');
 

@@ -1,4 +1,7 @@
 <?php 
+// Inclure la configuration de connexion à la base de données
+require_once '/config.php';
+
 header('Content-Type: application/json');
 header("Access-Control-Allow-Origin: *");
 header("Access-Control-Allow-Methods: GET, POST, PUT, DELETE, OPTIONS");
@@ -18,20 +21,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
 error_reporting(E_ALL);
 ini_set('display_errors', 1);
 
-$host = 'localhost';
-$dbname = 'gestvente';
-$user = 'root';
-$password = '';
-
-try {
-    $pdo = new PDO("mysql:host=$host;dbname=$dbname;charset=utf8mb4", $user, $password);
-    $pdo->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
-    $pdo->exec("SET NAMES utf8mb4 COLLATE utf8mb4_unicode_ci");
-} catch (Exception $e) {
-    http_response_code(500);
-    echo json_encode(['error' => 'Erreur connexion base de données: ' . $e->getMessage()]);
-    exit;
-}
+// La variable $pdo est déjà définie dans config.php
+// Configuration PostgreSQL - ajuster le jeu de caractères si nécessaire
+$pdo->exec("SET NAMES 'UTF8'");
 
 // Configuration des uploads
 define('UPLOAD_DIR', __DIR__ . '/uploads/');
@@ -150,7 +142,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'GET') {
         ");
         $stmt->execute([$utilisateurId, $produitId, $utilisateurId]);
         $result = $stmt->fetch(PDO::FETCH_ASSOC);
-        echo json_encode(['nonLus' => (int)$result['nonLus']]);
+        echo json_encode(['nonLus' => (int)$result['nonlus']]); // PostgreSQL retourne en minuscules
         exit;
     }
 
@@ -232,40 +224,42 @@ if ($_SERVER['REQUEST_METHOD'] === 'GET') {
 
     foreach ($commentaires as &$commentaire) {
         $commentaire['id'] = (int)$commentaire['id'];
-        $commentaire['utilisateurId'] = (int)$commentaire['utilisateurId'];
+        $commentaire['utilisateurId'] = (int)$commentaire['utilisateurnid']; // PostgreSQL retourne en minuscules
         
         // CORRIGÉ: Le statut "vu" est maintenant spécifique à l'utilisateur
         if (isset($commentaire['vu'])) {
             $commentaire['vu'] = (bool)$commentaire['vu'];
         }
         
-        if ($commentaire['utilisateurRole'] === 'admin') {
-            $commentaire['utilisateurNom'] = 'Admin';
+        if ($commentaire['utilisateurrole'] === 'admin') { // minuscules
+            $commentaire['utilisateurnom'] = 'Admin'; // minuscules
         }
-        unset($commentaire['utilisateurRole']);
+        unset($commentaire['utilisateurrole']);
         
         if ($extended) {
             $commentaire['type'] = $commentaire['type'] ?: 'text';
-            $commentaire['replyTo'] = $commentaire['replyTo'] ? (int)$commentaire['replyTo'] : null;
-            $commentaire['voiceDuration'] = $commentaire['voiceDuration'] ? (int)$commentaire['voiceDuration'] : null;
-            $commentaire['isEdited'] = (bool)$commentaire['isEdited'];
+            $commentaire['replyTo'] = $commentaire['replyto'] ? (int)$commentaire['replyto'] : null;
+            $commentaire['voiceDuration'] = $commentaire['voiceduration'] ? (int)$commentaire['voiceduration'] : null;
+            $commentaire['isEdited'] = (bool)$commentaire['isedited'];
             
             // SOLUTION 1 APPLIQUÉE: Retourner uniquement le chemin relatif
-            if ($commentaire['voiceUri']) {
-                $fullPath = __DIR__ . '/' . $commentaire['voiceUri'];
+            if ($commentaire['voiceuri']) {
+                $fullPath = __DIR__ . '/' . $commentaire['voiceuri'];
                 if (!file_exists($fullPath)) {
                     error_log("Fichier vocal manquant: " . $fullPath);
                     $commentaire['voiceUri'] = null;
+                } else {
+                    $commentaire['voiceUri'] = $commentaire['voiceuri'];
                 }
-                // NE PAS ajouter BASE_URL - garder le chemin relatif
             }
-            if ($commentaire['imageUri']) {
-                $fullPath = __DIR__ . '/' . $commentaire['imageUri'];
+            if ($commentaire['imageuri']) {
+                $fullPath = __DIR__ . '/' . $commentaire['imageuri'];
                 if (!file_exists($fullPath)) {
                     error_log("Fichier image manquant: " . $fullPath);
                     $commentaire['imageUri'] = null;
+                } else {
+                    $commentaire['imageUri'] = $commentaire['imageuri'];
                 }
-                // NE PAS ajouter BASE_URL - garder le chemin relatif
             }
         }
     }
@@ -307,7 +301,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $commentairesNonLus = $stmt->fetchAll(PDO::FETCH_COLUMN);
                 
                 // CORRIGÉ: Marquer chaque commentaire comme lu pour cet utilisateur
-                $insertSql = "INSERT IGNORE INTO commentaire_vus (commentaire_id, utilisateur_id, date_vue) VALUES (?, ?, NOW())";
+                // PostgreSQL: Utiliser ON CONFLICT au lieu de INSERT IGNORE
+                $insertSql = "INSERT INTO commentaire_vus (commentaire_id, utilisateur_id, date_vue) 
+                              VALUES (?, ?, CURRENT_TIMESTAMP) 
+                              ON CONFLICT (commentaire_id, utilisateur_id) DO NOTHING";
                 $insertStmt = $pdo->prepare($insertSql);
                 
                 foreach ($commentairesNonLus as $commentaireId) {
@@ -326,7 +323,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $stmt->execute([$utilisateurId, $utilisateurId]);
                 $commentairesNonLus = $stmt->fetchAll(PDO::FETCH_COLUMN);
                 
-                $insertSql = "INSERT IGNORE INTO commentaire_vus (commentaire_id, utilisateur_id, date_vue) VALUES (?, ?, NOW())";
+                $insertSql = "INSERT INTO commentaire_vus (commentaire_id, utilisateur_id, date_vue) 
+                              VALUES (?, ?, CURRENT_TIMESTAMP) 
+                              ON CONFLICT (commentaire_id, utilisateur_id) DO NOTHING";
                 $insertStmt = $pdo->prepare($insertSql);
                 
                 foreach ($commentairesNonLus as $commentaireId) {
@@ -430,11 +429,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $utilisateurNom = $utilisateur['nom'];
 
         if ($type === 'text' && !empty($texte)) {
+            // PostgreSQL: Utiliser CURRENT_TIMESTAMP au lieu de NOW()
             $stmt = $pdo->prepare("
                 SELECT COUNT(*) as count 
                 FROM Commentaire 
                 WHERE produitId = ? AND utilisateurId = ? AND texte = ? 
-                AND dateCreation > DATE_SUB(NOW(), INTERVAL 5 SECOND)
+                AND dateCreation > CURRENT_TIMESTAMP - INTERVAL '5 seconds'
             ");
             $stmt->execute([$produitId, $utilisateurId, trim($texte)]);
             $recent = $stmt->fetch();
@@ -448,11 +448,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         }
 
         // SUPPRIMÉ: Le champ 'vu' n'est plus utilisé dans Commentaire
+        // PostgreSQL: Utiliser CURRENT_TIMESTAMP au lieu de NOW()
         $stmt = $pdo->prepare("
             INSERT INTO Commentaire (
                 produitId, utilisateurId, texte, type, reply_to, 
                 voice_uri, voice_duration, image_uri, dateCreation
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NOW())
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+            RETURNING id
         ");
         
         $result = $stmt->execute([
@@ -465,7 +467,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             throw new Exception('Échec de l\'insertion en base de données');
         }
 
-        $commentId = $pdo->lastInsertId();
+        $row = $stmt->fetch(PDO::FETCH_ASSOC);
+        $commentId = $row['id'];
 
         if (!$commentId) {
             throw new Exception('Impossible d\'obtenir l\'ID du commentaire créé');
@@ -545,7 +548,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'PUT') {
             exit;
         }
 
-        if ($comment['utilisateurId'] != $utilisateurId) {
+        if ($comment['utilisateurnid'] != $utilisateurId) { // minuscules
             http_response_code(403);
             echo json_encode(['error' => 'Vous ne pouvez pas modifier ce commentaire']);
             exit;
@@ -557,7 +560,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'PUT') {
             exit;
         }
 
-        $stmt = $pdo->prepare("UPDATE Commentaire SET texte = ?, is_edited = 1, date_modification = NOW() WHERE id = ?");
+        $stmt = $pdo->prepare("UPDATE Commentaire SET texte = ?, is_edited = 1, date_modification = CURRENT_TIMESTAMP WHERE id = ?");
         $stmt->execute([trim($texte), $id]);
 
         echo json_encode(['success' => true, 'message' => 'Commentaire modifié avec succès']);
@@ -587,7 +590,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'DELETE') {
         $stmtCheck->execute([$id]);
         $comment = $stmtCheck->fetch();
 
-        if (!$comment || $comment['utilisateurId'] != $utilisateurId) {
+        if (!$comment || $comment['utilisateurnid'] != $utilisateurId) { // minuscules
             http_response_code(403);
             echo json_encode(['error' => 'Permission refusée']);
             exit;

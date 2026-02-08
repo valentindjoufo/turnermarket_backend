@@ -1,6 +1,6 @@
 <?php
 // 📁 Inclure la configuration de connexion PostgreSQL (même répertoire)
-require_once __DIR__ . '/config.php';
+require_once 'config.php';
 
 header("Access-Control-Allow-Origin: *");
 header("Access-Control-Allow-Methods: POST, OPTIONS");
