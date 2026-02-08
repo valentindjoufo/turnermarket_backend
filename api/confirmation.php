@@ -1,14 +1,24 @@
 <?php
-// confirmation.php - Gère le retour depuis PayUnit
+/**
+ * confirmation.php - Gère le retour depuis PayUnit
+ * Version avec connexion PostgreSQL via config.php
+ */
+
+// 📦 Inclusion de la configuration (connexion PDO PostgreSQL)
+require_once 'config.php';
+
+// 🚦 Configuration des headers
 header("Access-Control-Allow-Origin: *");
 header("Access-Control-Allow-Headers: Content-Type");
 header("Content-Type: application/json; charset=UTF-8");
 
 try {
-    $conn = new PDO("mysql:host=localhost;dbname=gestvente;charset=utf8", "root", "");
-    $conn->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
+    // 💾 Vérification que la connexion PDO est bien disponible
+    if (!isset($pdo) || !($pdo instanceof PDO)) {
+        throw new Exception("Connexion à la base de données non disponible");
+    }
 
-    // Récupérer les paramètres de retour
+    // 📥 Récupérer les paramètres de retour
     $transactionId = $_GET['transaction_id'] ?? $_POST['transaction_id'] ?? null;
     $status = $_GET['status'] ?? $_POST['status'] ?? 'unknown';
 
@@ -22,8 +32,8 @@ try {
         throw new Exception("Transaction ID manquant");
     }
 
-    // Vérifier la vente
-    $stmt = $conn->prepare("SELECT * FROM Vente WHERE transactionId = ?");
+    // 🔍 Vérifier la vente
+    $stmt = $pdo->prepare("SELECT * FROM Vente WHERE transactionId = ?");
     $stmt->execute([$transactionId]);
     $vente = $stmt->fetch(PDO::FETCH_ASSOC);
 
@@ -32,40 +42,50 @@ try {
     }
 
     if ($status === 'success' || $status === 'SUCCESS') {
-        $conn->beginTransaction();
+        // 🔄 Début de la transaction
+        $pdo->beginTransaction();
 
-        // Mettre à jour le statut
-        $stmt = $conn->prepare("UPDATE Vente SET statut = 'confirme' WHERE transactionId = ?");
-        $stmt->execute([$transactionId]);
+        try {
+            // 📝 Mettre à jour le statut
+            $stmt = $pdo->prepare("UPDATE Vente SET statut = 'confirme' WHERE transactionId = ?");
+            $stmt->execute([$transactionId]);
 
-        // Marquer les produits comme achetés
-        $stmt = $conn->prepare("UPDATE VenteProduit SET achetee = 1 WHERE venteId = ?");
-        $stmt->execute([$vente['id']]);
+            // 🛒 Marquer les produits comme achetés
+            $stmt = $pdo->prepare("UPDATE VenteProduit SET achetee = 1 WHERE venteId = ?");
+            $stmt->execute([$vente['id']]);
 
-        // Mettre à jour les commissions
-        $stmt = $conn->prepare("UPDATE Commission SET statut = 'paye', dateTraitement = NOW() WHERE venteId = ?");
-        $stmt->execute([$vente['id']]);
+            // 💰 Mettre à jour les commissions
+            $stmt = $pdo->prepare("UPDATE Commission SET statut = 'paye', dateTraitement = NOW() WHERE venteId = ?");
+            $stmt->execute([$vente['id']]);
 
-        // Créditer les vendeurs
-        $stmtCommission = $conn->prepare("SELECT vendeurId, montantVendeur FROM Commission WHERE venteId = ?");
-        $stmtCommission->execute([$vente['id']]);
-        $commissions = $stmtCommission->fetchAll(PDO::FETCH_ASSOC);
+            // 👥 Créditer les vendeurs
+            $stmtCommission = $pdo->prepare("SELECT vendeurId, montantVendeur FROM Commission WHERE venteId = ?");
+            $stmtCommission->execute([$vente['id']]);
+            $commissions = $stmtCommission->fetchAll(PDO::FETCH_ASSOC);
 
-        $stmtUpdateSolde = $conn->prepare("UPDATE Utilisateur SET soldeVendeur = soldeVendeur + ?, nbVentes = nbVentes + 1 WHERE id = ?");
-        foreach ($commissions as $commission) {
-            $stmtUpdateSolde->execute([$commission['montantVendeur'], $commission['vendeurId']]);
+            $stmtUpdateSolde = $pdo->prepare("UPDATE Utilisateur SET soldeVendeur = soldeVendeur + ?, nbVentes = nbVentes + 1 WHERE id = ?");
+            foreach ($commissions as $commission) {
+                $stmtUpdateSolde->execute([$commission['montantVendeur'], $commission['vendeurId']]);
+            }
+
+            // ✅ Validation de la transaction
+            $pdo->commit();
+
+            echo json_encode([
+                "success" => true,
+                "message" => "Paiement confirmé avec succès!",
+                "transaction_id" => $transactionId
+            ]);
+
+        } catch (Exception $e) {
+            // ❌ Rollback en cas d'erreur
+            $pdo->rollBack();
+            throw $e;
         }
 
-        $conn->commit();
-
-        echo json_encode([
-            "success" => true,
-            "message" => "Paiement confirmé avec succès!",
-            "transaction_id" => $transactionId
-        ]);
-
     } else {
-        $stmt = $conn->prepare("UPDATE Vente SET statut = 'echoue' WHERE transactionId = ?");
+        // ❌ Paiement échoué
+        $stmt = $pdo->prepare("UPDATE Vente SET statut = 'echoue' WHERE transactionId = ?");
         $stmt->execute([$transactionId]);
 
         echo json_encode([
@@ -75,8 +95,21 @@ try {
         ]);
     }
 
+} catch (PDOException $e) {
+    // 📝 Log des erreurs PDO
+    error_log("❌ ERREUR PDO CONFIRMATION: " . $e->getMessage());
+    error_log("Code erreur: " . $e->getCode());
+    
+    echo json_encode([
+        "success" => false,
+        "message" => "Erreur de base de données",
+        "debug" => $e->getMessage()
+    ]);
+    
 } catch (Exception $e) {
-    error_log("ERREUR CONFIRMATION: " . $e->getMessage());
+    // 📝 Log des autres erreurs
+    error_log("❌ ERREUR CONFIRMATION: " . $e->getMessage());
+    
     echo json_encode([
         "success" => false,
         "message" => $e->getMessage()

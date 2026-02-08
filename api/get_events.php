@@ -1,5 +1,13 @@
 <?php
-// get_events.php - Récupérer les événements depuis la base de données
+/**
+ * get_events.php - Récupérer les événements depuis la base de données
+ * Version avec connexion PostgreSQL via config.php
+ */
+
+// 📦 Inclusion de la configuration (connexion PDO PostgreSQL)
+require_once 'config.php';
+
+// 🚦 Configuration des headers CORS
 header("Access-Control-Allow-Origin: *");
 header("Access-Control-Allow-Methods: GET, POST, OPTIONS, PUT, DELETE");
 header("Access-Control-Allow-Headers: Content-Type, Authorization, ngrok-skip-browser-warning, X-Requested-With");
@@ -11,18 +19,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
 }
 
 try {
-    // Configuration de la base de données
-    $host = 'localhost';
-    $dbname = 'gestvente';
-    $username = 'root';
-    $password = '';
-    
-    $conn = new PDO("mysql:host=$host;dbname=$dbname;charset=utf8mb4", $username, $password);
-    $conn->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
-    $conn->setAttribute(PDO::ATTR_DEFAULT_FETCH_MODE, PDO::FETCH_ASSOC);
+    // 💾 Vérification que la connexion PDO est bien disponible
+    if (!isset($pdo) || !($pdo instanceof PDO)) {
+        throw new Exception("Connexion à la base de données non disponible");
+    }
 
-    // Récupérer les événements actifs
-    $stmt = $conn->prepare("
+    // 📅 Récupérer les événements actifs
+    $stmt = $pdo->prepare("
         SELECT 
             id,
             nom,
@@ -38,9 +41,11 @@ try {
     ");
     
     $stmt->execute();
-    $events = $stmt->fetchAll();
+    $events = $stmt->fetchAll(PDO::FETCH_ASSOC);
 
-    // Formater la réponse
+    error_log("✅ Événements récupérés: " . count($events));
+
+    // 📋 Formater la réponse
     $formattedEvents = array_map(function($event) {
         return [
             'id' => (int)$event['id'],
@@ -57,22 +62,31 @@ try {
     echo json_encode([
         "success" => true,
         "events" => $formattedEvents,
-        "count" => count($formattedEvents)
+        "count" => count($formattedEvents),
+        "timestamp" => date('Y-m-d H:i:s')
     ], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
 
 } catch (PDOException $e) {
-    error_log("Erreur BDD get_events.php: " . $e->getMessage());
+    // ❌ Erreur de base de données
+    error_log("❌ ERREUR PDO GET_EVENTS: " . $e->getMessage());
+    
     http_response_code(500);
     echo json_encode([
         "success" => false,
         "error" => "Erreur serveur lors de la récupération des événements",
-        "details" => $e->getMessage()
+        "details" => $e->getMessage(),
+        "timestamp" => date('Y-m-d H:i:s')
     ], JSON_UNESCAPED_UNICODE);
+    
 } catch (Exception $e) {
+    // ❌ Autres erreurs
+    error_log("❌ ERREUR GET_EVENTS: " . $e->getMessage());
+    
     http_response_code(400);
     echo json_encode([
         "success" => false,
-        "error" => $e->getMessage()
+        "error" => $e->getMessage(),
+        "timestamp" => date('Y-m-d H:i:s')
     ], JSON_UNESCAPED_UNICODE);
 }
 ?>

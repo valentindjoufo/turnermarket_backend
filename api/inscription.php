@@ -1,38 +1,35 @@
 <?php
-// Autoriser l'accès à toutes les origines (CORS)
+/**
+ * inscription.php - Gestion de l'inscription des utilisateurs
+ * Version avec connexion PostgreSQL via config.php
+ */
+
+// 📦 Inclusion de la configuration (connexion PDO PostgreSQL)
+require_once 'config.php';
+
+// 🚦 Autoriser l'accès à toutes les origines (CORS)
 header("Access-Control-Allow-Origin: *");
 header("Access-Control-Allow-Headers: Content-Type");
 header("Access-Control-Allow-Methods: GET, POST, OPTIONS");
 header("Content-Type: application/json; charset=UTF-8");
 
-// Gestion des requêtes pré-vol OPTIONS (nécessaire pour CORS côté Web)
+// 📤 Gestion des requêtes pré-vol OPTIONS (nécessaire pour CORS côté Web)
 if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
     http_response_code(200);
     exit();
 }
 
-// Configuration des uploads
+// 🔧 Configuration des uploads
 define('UPLOAD_DIR', __DIR__ . '/uploads/profils/');
 define('MAX_FILE_SIZE', 5 * 1024 * 1024); // 5MB
-define('BASE_URL', 'http://10.97.71.236/gestvente/api/');
+define('BASE_URL', '/gestvente/api/');
 
-// Créer le dossier s'il n'existe pas
+// 📁 Créer le dossier s'il n'existe pas
 if (!is_dir(UPLOAD_DIR)) {
     mkdir(UPLOAD_DIR, 0755, true);
 }
 
-// Connexion à la base de données
-try {
-    $pdo = new PDO('mysql:host=localhost;dbname=gestvente;charset=utf8', 'root', '', [
-        PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION
-    ]);
-} catch (PDOException $e) {
-    http_response_code(500);
-    echo json_encode(["success" => false, "message" => "Erreur de connexion à la base de données."]);
-    exit;
-}
-
-// Fonction pour uploader la photo de profil
+// 📤 Fonction pour uploader la photo de profil
 function uploadPhotoProfil($file) {
     $allowedTypes = ['image/jpeg', 'image/png', 'image/jpg', 'image/webp', 'image/gif'];
     
@@ -53,122 +50,170 @@ function uploadPhotoProfil($file) {
         throw new Exception('Type de fichier non autorisé. Utilisez JPG, PNG, WEBP ou GIF.');
     }
     
-    // Générer un nom unique
-    $extension = pathinfo($file['name'], PATHINFO_EXTENSION);
-    if (!$extension) {
-        $extension = 'jpg';
+    // 🔒 Validation supplémentaire par extension
+    $allowedExtensions = ['jpg', 'jpeg', 'png', 'webp', 'gif'];
+    $extension = strtolower(pathinfo($file['name'], PATHINFO_EXTENSION));
+    
+    if (!in_array($extension, $allowedExtensions)) {
+        throw new Exception('Extension de fichier non autorisée.');
     }
-    $fileName = 'profil_' . uniqid() . '_' . time() . '.' . strtolower($extension);
+    
+    // 🏷️ Générer un nom unique
+    $fileName = 'profil_' . uniqid() . '_' . time() . '.' . $extension;
     $filePath = UPLOAD_DIR . $fileName;
     
+    // 📤 Déplacer le fichier uploadé
     if (!move_uploaded_file($file['tmp_name'], $filePath)) {
         throw new Exception('Impossible de sauvegarder la photo.');
+    }
+    
+    // ✅ Vérifier que le fichier a bien été créé
+    if (!file_exists($filePath)) {
+        throw new Exception('Échec de la création du fichier.');
     }
     
     return 'uploads/profils/' . $fileName;
 }
 
-// Générer un matricule unique
+// 🔢 Générer un matricule unique
 function genererMatricule($prefix = "USR") {
     return $prefix . strtoupper(uniqid());
 }
 
-// Traitement de l'inscription
-$contentType = $_SERVER['CONTENT_TYPE'] ?? '';
+try {
+    // 💾 Vérification que la connexion PDO est bien disponible
+    if (!isset($pdo) || !($pdo instanceof PDO)) {
+        throw new Exception("Connexion à la base de données non disponible");
+    }
 
-// Variables
-$nom = '';
-$sexe = '';
-$nationalite = '';
-$telephone = '';
-$email = '';
-$motDePasse = '';
-$photoProfil = null;
+    // 📥 Traitement de l'inscription
+    $contentType = $_SERVER['CONTENT_TYPE'] ?? '';
 
-// Vérifier si c'est un formulaire multipart (avec photo)
-if (strpos($contentType, 'multipart/form-data') !== false || !empty($_FILES)) {
-    // Récupération des données depuis $_POST
-    $nom = $_POST['nom'] ?? '';
-    $sexe = $_POST['sexe'] ?? '';
-    $nationalite = $_POST['nationalite'] ?? '';
-    $telephone = $_POST['telephone'] ?? '';
-    $email = $_POST['email'] ?? '';
-    $motDePasse = $_POST['motDePasse'] ?? '';
-    
-    // Upload de la photo si présente
-    if (isset($_FILES['photoProfil']) && $_FILES['photoProfil']['error'] !== UPLOAD_ERR_NO_FILE) {
-        try {
-            $photoProfil = uploadPhotoProfil($_FILES['photoProfil']);
-        } catch (Exception $e) {
+    // Variables
+    $nom = '';
+    $sexe = '';
+    $nationalite = '';
+    $telephone = '';
+    $email = '';
+    $motDePasse = '';
+    $photoProfil = null;
+
+    error_log("=== TRAITEMENT INSCRIPTION ===");
+    error_log("Content-Type: $contentType");
+
+    // Vérifier si c'est un formulaire multipart (avec photo)
+    if (strpos($contentType, 'multipart/form-data') !== false || !empty($_FILES)) {
+        error_log("📤 Formulaire multipart détecté");
+        
+        // Récupération des données depuis $_POST
+        $nom = $_POST['nom'] ?? '';
+        $sexe = $_POST['sexe'] ?? '';
+        $nationalite = $_POST['nationalite'] ?? '';
+        $telephone = $_POST['telephone'] ?? '';
+        $email = $_POST['email'] ?? '';
+        $motDePasse = $_POST['motDePasse'] ?? '';
+        
+        // 📷 Upload de la photo si présente
+        if (isset($_FILES['photoProfil']) && $_FILES['photoProfil']['error'] !== UPLOAD_ERR_NO_FILE) {
+            try {
+                $photoProfil = uploadPhotoProfil($_FILES['photoProfil']);
+                error_log("✅ Photo uploadée: $photoProfil");
+            } catch (Exception $e) {
+                error_log("❌ Erreur upload photo: " . $e->getMessage());
+                http_response_code(400);
+                echo json_encode(["success" => false, "message" => $e->getMessage()]);
+                exit;
+            }
+        } else {
+            error_log("ℹ️ Aucune photo fournie");
+        }
+    } else {
+        // 📝 Données JSON (sans photo)
+        error_log("📝 Données JSON détectées");
+        $raw = file_get_contents("php://input");
+        $data = json_decode($raw, true);
+        
+        if (!$data) {
+            error_log("❌ Données JSON invalides");
             http_response_code(400);
-            echo json_encode(["success" => false, "message" => $e->getMessage()]);
+            echo json_encode(["success" => false, "message" => "Données JSON invalides ou manquantes."]);
             exit;
         }
+        
+        $nom = $data['nom'] ?? '';
+        $sexe = $data['sexe'] ?? '';
+        $nationalite = $data['nationalite'] ?? '';
+        $telephone = $data['telephone'] ?? '';
+        $email = $data['email'] ?? '';
+        $motDePasse = $data['motDePasse'] ?? '';
     }
-} else {
-    // Données JSON (sans photo)
-    $raw = file_get_contents("php://input");
-    $data = json_decode($raw, true);
-    
-    if (!$data) {
+
+    // 🛡️ Vérification des champs requis
+    $champsRequis = ['nom', 'sexe', 'nationalite', 'telephone', 'email', 'motDePasse'];
+    $champsVides = [];
+
+    foreach ($champsRequis as $champ) {
+        if (empty($$champ)) {
+            $champsVides[] = $champ;
+        }
+    }
+
+    if (!empty($champsVides)) {
+        error_log("❌ Champs requis manquants: " . implode(', ', $champsVides));
+        
+        // Supprimer la photo si elle a été uploadée
+        if ($photoProfil && file_exists(__DIR__ . '/' . $photoProfil)) {
+            unlink(__DIR__ . '/' . $photoProfil);
+        }
+        
         http_response_code(400);
-        echo json_encode(["success" => false, "message" => "Données JSON invalides ou manquantes."]);
+        echo json_encode([
+            "success" => false, 
+            "message" => "Champs requis manquants: " . implode(', ', $champsVides)
+        ]);
         exit;
     }
-    
-    $nom = $data['nom'] ?? '';
-    $sexe = $data['sexe'] ?? '';
-    $nationalite = $data['nationalite'] ?? '';
-    $telephone = $data['telephone'] ?? '';
-    $email = $data['email'] ?? '';
-    $motDePasse = $data['motDePasse'] ?? '';
-}
 
-// Vérification des champs requis
-$champsRequis = ['nom', 'sexe', 'nationalite', 'telephone', 'email', 'motDePasse'];
-$champsVides = [];
-
-foreach ($champsRequis as $champ) {
-    if (empty($$champ)) {
-        $champsVides[] = $champ;
+    // 🛡️ Validation de l'email
+    if (!filter_var($email, FILTER_VALIDATE_EMAIL)) {
+        error_log("❌ Format d'email invalide: $email");
+        
+        if ($photoProfil && file_exists(__DIR__ . '/' . $photoProfil)) {
+            unlink(__DIR__ . '/' . $photoProfil);
+        }
+        
+        http_response_code(400);
+        echo json_encode(["success" => false, "message" => "Format d'email invalide."]);
+        exit;
     }
-}
 
-if (!empty($champsVides)) {
-    http_response_code(400);
-    echo json_encode([
-        "success" => false, 
-        "message" => "Champs requis manquants: " . implode(', ', $champsVides)
-    ]);
-    exit;
-}
+    // 🛡️ Validation du mot de passe (minimum 6 caractères)
+    if (strlen($motDePasse) < 6) {
+        error_log("❌ Mot de passe trop court: " . strlen($motDePasse) . " caractères");
+        
+        if ($photoProfil && file_exists(__DIR__ . '/' . $photoProfil)) {
+            unlink(__DIR__ . '/' . $photoProfil);
+        }
+        
+        http_response_code(400);
+        echo json_encode(["success" => false, "message" => "Le mot de passe doit contenir au moins 6 caractères."]);
+        exit;
+    }
 
-// Validation de l'email
-if (!filter_var($email, FILTER_VALIDATE_EMAIL)) {
-    http_response_code(400);
-    echo json_encode(["success" => false, "message" => "Format d'email invalide."]);
-    exit;
-}
+    // 🔢 Générer un matricule unique
+    $matricule = genererMatricule();
+    error_log("🔢 Matricule généré: $matricule");
 
-// Validation du mot de passe (minimum 6 caractères)
-if (strlen($motDePasse) < 6) {
-    http_response_code(400);
-    echo json_encode(["success" => false, "message" => "Le mot de passe doit contenir au moins 6 caractères."]);
-    exit;
-}
+    // 🔐 Hachage du mot de passe
+    $motDePasseHache = password_hash($motDePasse, PASSWORD_DEFAULT);
 
-// Générer un matricule unique
-$matricule = genererMatricule();
-
-// Hachage du mot de passe
-$motDePasseHache = password_hash($motDePasse, PASSWORD_DEFAULT);
-
-try {
-    // Vérifier si l'email ou téléphone existe déjà
+    // 🔍 Vérifier si l'email ou téléphone existe déjà
     $checkStmt = $pdo->prepare("SELECT id FROM Utilisateur WHERE email = ? OR telephone = ?");
     $checkStmt->execute([$email, $telephone]);
     
     if ($checkStmt->fetch()) {
+        error_log("❌ Email ou téléphone déjà utilisé - Email: $email, Téléphone: $telephone");
+        
         // Supprimer la photo uploadée si l'utilisateur existe déjà
         if ($photoProfil && file_exists(__DIR__ . '/' . $photoProfil)) {
             unlink(__DIR__ . '/' . $photoProfil);
@@ -179,11 +224,13 @@ try {
         exit;
     }
 
-    // Insertion dans la base de données
+    // 📝 Insertion dans la base de données
     $stmt = $pdo->prepare("
         INSERT INTO Utilisateur (
-            matricule, nom, sexe, nationalite, telephone, email, motDePasse, photoProfil
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            matricule, nom, sexe, nationalite, telephone, email, motDePasse, photoProfil,
+            role, etat, dateCreation, nombreFollowers, nombreFollowing, 
+            noteVendeur, soldeVendeur, nbVentes, statutVendeur
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'client', 'actif', NOW(), 0, 0, 0, 0, 0, 'nouveau')
     ");
     
     $stmt->execute([
@@ -197,20 +244,37 @@ try {
         $photoProfil
     ]);
 
+    $userId = $pdo->lastInsertId();
+    
+    error_log("✅ Utilisateur créé - ID: $userId, Matricule: $matricule, Nom: $nom");
+
     $response = [
         "success" => true,
         "message" => "Inscription réussie",
-        "matricule" => $matricule
+        "user" => [
+            "id" => (int)$userId,
+            "matricule" => $matricule,
+            "nom" => $nom,
+            "email" => $email,
+            "telephone" => $telephone,
+            "role" => "client",
+            "etat" => "actif"
+        ],
+        "timestamp" => date('Y-m-d H:i:s')
     ];
     
-    // Ajouter l'URL de la photo si présente
+    // 📷 Ajouter l'URL de la photo si présente
     if ($photoProfil) {
-        $response['photoProfil'] = BASE_URL . $photoProfil;
+        $response['user']['photoProfil'] = BASE_URL . $photoProfil;
+        $response['user']['photoProfilPath'] = $photoProfil;
     }
     
-    echo json_encode($response);
+    echo json_encode($response, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
 
 } catch (PDOException $e) {
+    // ❌ Erreur de base de données
+    error_log("❌ ERREUR PDO INSCRIPTION: " . $e->getMessage());
+    
     // Supprimer la photo en cas d'erreur d'insertion
     if ($photoProfil && file_exists(__DIR__ . '/' . $photoProfil)) {
         unlink(__DIR__ . '/' . $photoProfil);
@@ -219,7 +283,25 @@ try {
     http_response_code(500);
     echo json_encode([
         "success" => false, 
-        "message" => "Erreur lors de l'inscription: " . $e->getMessage()
+        "message" => "Erreur lors de l'inscription",
+        "debug" => $e->getMessage(),
+        "timestamp" => date('Y-m-d H:i:s')
+    ]);
+    
+} catch (Exception $e) {
+    // ❌ Autres erreurs
+    error_log("❌ ERREUR INSCRIPTION: " . $e->getMessage());
+    
+    // Supprimer la photo en cas d'erreur
+    if ($photoProfil && file_exists(__DIR__ . '/' . $photoProfil)) {
+        unlink(__DIR__ . '/' . $photoProfil);
+    }
+    
+    http_response_code(500);
+    echo json_encode([
+        "success" => false, 
+        "message" => $e->getMessage(),
+        "timestamp" => date('Y-m-d H:i:s')
     ]);
 }
 ?>

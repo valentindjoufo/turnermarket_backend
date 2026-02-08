@@ -1,5 +1,13 @@
 <?php
-// get_commissions.php - VERSION SANS DÉLAI - PAIEMENT IMMÉDIAT
+/**
+ * get_commissions.php - VERSION SANS DÉLAI - PAIEMENT IMMÉDIAT
+ * Version avec connexion PostgreSQL via config.php
+ */
+
+// 📦 Inclusion de la configuration (connexion PDO PostgreSQL)
+require_once 'config.php';
+
+// 🚦 Configuration des headers
 header("Access-Control-Allow-Origin: *");
 header("Access-Control-Allow-Methods: GET, POST, OPTIONS");
 header("Access-Control-Allow-Headers: Content-Type, Authorization");
@@ -10,6 +18,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
     exit();
 }
 
+// 📤 Fonction de réponse standardisée
 function sendResponse($success, $message, $data = [], $code = 200) {
     http_response_code($code);
     echo json_encode([
@@ -22,16 +31,12 @@ function sendResponse($success, $message, $data = [], $code = 200) {
 }
 
 try {
-    $options = [
-        PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION,
-        PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
-        PDO::ATTR_TIMEOUT => 10,
-        PDO::MYSQL_ATTR_INIT_COMMAND => "SET NAMES utf8mb4"
-    ];
-    
-    $conn = new PDO("mysql:host=localhost;dbname=gestvente;charset=utf8mb4", "root", "", $options);
+    // 💾 Vérification que la connexion PDO est bien disponible
+    if (!isset($pdo) || !($pdo instanceof PDO)) {
+        throw new Exception("Connexion à la base de données non disponible");
+    }
 
-    // Récupération des paramètres
+    // 📥 Récupération des paramètres
     $userId = null;
     $userRole = 'client';
     $action = 'get_dashboard';
@@ -69,13 +74,13 @@ try {
     error_log("=== GET COMMISSIONS API ===");
     error_log("User ID: $userId, Role: $userRole, Action: $action");
 
-    // Créer les commissions manquantes
-    creerCommissionsManquantes($conn);
+    // 🔧 Créer les commissions manquantes
+    creerCommissionsManquantes($pdo);
 
     switch ($action) {
         case 'get_dashboard':
         default:
-            getDashboardComplet($conn, $userId, $userRole);
+            getDashboardComplet($pdo, $userId, $userRole);
             break;
     }
 
@@ -91,11 +96,11 @@ try {
  * 🔧 CRÉER AUTOMATIQUEMENT LES COMMISSIONS MANQUANTES
  * Statut par défaut : 'en_attente'
  */
-function creerCommissionsManquantes($conn) {
+function creerCommissionsManquantes($pdo) {
     try {
         error_log("🔄 Vérification des commissions manquantes...");
         
-        $stmtCheck = $conn->prepare("
+        $stmtCheck = $pdo->prepare("
             SELECT COUNT(*) as nb
             FROM Vente v
             JOIN VenteProduit vp ON v.id = vp.venteId
@@ -103,12 +108,12 @@ function creerCommissionsManquantes($conn) {
             WHERE c.id IS NULL
         ");
         $stmtCheck->execute();
-        $result = $stmtCheck->fetch();
+        $result = $stmtCheck->fetch(PDO::FETCH_ASSOC);
         
         if ($result['nb'] > 0) {
             error_log("⚠️ {$result['nb']} ventes sans commission détectées - Création automatique...");
             
-            $stmt = $conn->prepare("
+            $stmt = $pdo->prepare("
                 INSERT INTO Commission (venteId, vendeurId, montantTotal, montantVendeur, montantAdmin, pourcentageCommission, statut, dateCreation, dateTraitement)
                 SELECT 
                     v.id as venteId,
@@ -144,16 +149,16 @@ function creerCommissionsManquantes($conn) {
 /**
  * 🎯 DASHBOARD COMPLET PAR UTILISATEUR
  */
-function getDashboardComplet($conn, $userId, $userRole) {
+function getDashboardComplet($pdo, $userId, $userRole) {
     try {
         error_log("🔍 getDashboardComplet - userId: $userId, role: $userRole");
         
         $dashboardData = [];
         
         if ($userRole === 'admin') {
-            $dashboardData = getDashboardAdmin($conn);
+            $dashboardData = getDashboardAdmin($pdo);
         } else {
-            $dashboardData = getDashboardVendeur($conn, $userId);
+            $dashboardData = getDashboardVendeur($pdo, $userId);
         }
         
         error_log("✅ Dashboard complet récupéré - Role: $userRole, UserId: $userId");
@@ -168,9 +173,9 @@ function getDashboardComplet($conn, $userId, $userRole) {
 /**
  * 👑 DASHBOARD ADMIN
  */
-function getDashboardAdmin($conn) {
+function getDashboardAdmin($pdo) {
     // Soldes admin
-    $stmt = $conn->prepare("
+    $stmt = $pdo->prepare("
         SELECT 
             COALESCE(SUM(CASE WHEN statut = 'paye' THEN montantAdmin ELSE 0 END), 0) as soldeDisponible,
             COALESCE(SUM(CASE WHEN statut = 'en_attente' THEN montantAdmin ELSE 0 END), 0) as soldeEnAttente,
@@ -183,10 +188,10 @@ function getDashboardAdmin($conn) {
         FROM Commission
     ");
     $stmt->execute();
-    $soldesAdmin = $stmt->fetch();
+    $soldesAdmin = $stmt->fetch(PDO::FETCH_ASSOC);
     
     // Statistiques globales
-    $stmt = $conn->prepare("
+    $stmt = $pdo->prepare("
         SELECT 
             COUNT(DISTINCT v.utilisateurId) as clientsTotaux,
             COALESCE(AVG(vp.prixUnitaire * vp.quantite), 0) as panierMoyenPlatform,
@@ -197,10 +202,10 @@ function getDashboardAdmin($conn) {
         WHERE v.statut != 'annule'
     ");
     $stmt->execute();
-    $statsGlobales = $stmt->fetch();
+    $statsGlobales = $stmt->fetch(PDO::FETCH_ASSOC);
     
     // Statistiques par vendeur
-    $stmt = $conn->prepare("
+    $stmt = $pdo->prepare("
         SELECT 
             u.id,
             u.nom,
@@ -218,10 +223,10 @@ function getDashboardAdmin($conn) {
         ORDER BY revenue DESC
     ");
     $stmt->execute();
-    $statistiquesVendeurs = $stmt->fetchAll();
+    $statistiquesVendeurs = $stmt->fetchAll(PDO::FETCH_ASSOC);
     
     // Top formations
-    $stmt = $conn->prepare("
+    $stmt = $pdo->prepare("
         SELECT 
             p.id,
             p.titre,
@@ -241,10 +246,10 @@ function getDashboardAdmin($conn) {
         LIMIT 5
     ");
     $stmt->execute();
-    $topFormations = $stmt->fetchAll();
+    $topFormations = $stmt->fetchAll(PDO::FETCH_ASSOC);
     
     // Ventes récentes
-    $stmt = $conn->prepare("
+    $stmt = $pdo->prepare("
         SELECT 
             vp.id,
             p.titre as formation,
@@ -273,10 +278,10 @@ function getDashboardAdmin($conn) {
         LIMIT 20
     ");
     $stmt->execute();
-    $ventesRecentes = $stmt->fetchAll();
+    $ventesRecentes = $stmt->fetchAll(PDO::FETCH_ASSOC);
     
     // Demandes de retrait
-    $stmt = $conn->prepare("
+    $stmt = $pdo->prepare("
         SELECT 
             dr.id,
             dr.montant,
@@ -295,7 +300,7 @@ function getDashboardAdmin($conn) {
         LIMIT 10
     ");
     $stmt->execute();
-    $demandesRetrait = $stmt->fetchAll();
+    $demandesRetrait = $stmt->fetchAll(PDO::FETCH_ASSOC);
     
     $soldesComplets = array_merge($soldesAdmin, $statsGlobales);
     
@@ -311,9 +316,9 @@ function getDashboardAdmin($conn) {
 /**
  * 🛒 DASHBOARD VENDEUR
  */
-function getDashboardVendeur($conn, $userId) {
+function getDashboardVendeur($pdo, $userId) {
     // Calcul des soldes
-    $stmt = $conn->prepare("
+    $stmt = $pdo->prepare("
         SELECT 
             COALESCE(SUM(CASE WHEN c.statut = 'paye' THEN c.montantVendeur ELSE 0 END), 0) as soldeDisponible,
             COALESCE(SUM(CASE WHEN c.statut = 'en_attente' THEN c.montantVendeur ELSE 0 END), 0) as soldeEnAttente,
@@ -327,10 +332,10 @@ function getDashboardVendeur($conn, $userId) {
         WHERE c.vendeurId = ?
     ");
     $stmt->execute([$userId]);
-    $soldes = $stmt->fetch();
+    $soldes = $stmt->fetch(PDO::FETCH_ASSOC);
     
     // Statistiques personnelles
-    $stmt = $conn->prepare("
+    $stmt = $pdo->prepare("
         SELECT 
             COUNT(DISTINCT p.id) as nombreFormations,
             COUNT(DISTINCT v.utilisateurId) as clientsUniques,
@@ -342,12 +347,12 @@ function getDashboardVendeur($conn, $userId) {
         WHERE p.vendeurId = ? AND v.statut != 'annule'
     ");
     $stmt->execute([$userId]);
-    $statsPerso = $stmt->fetch();
+    $statsPerso = $stmt->fetch(PDO::FETCH_ASSOC);
     
     $soldesComplets = array_merge($soldes, $statsPerso);
     
     // Top formations
-    $stmt = $conn->prepare("
+    $stmt = $pdo->prepare("
         SELECT 
             p.id,
             p.titre,
@@ -365,10 +370,10 @@ function getDashboardVendeur($conn, $userId) {
         LIMIT 5
     ");
     $stmt->execute([$userId]);
-    $topFormations = $stmt->fetchAll();
+    $topFormations = $stmt->fetchAll(PDO::FETCH_ASSOC);
     
     // Ventes récentes
-    $stmt = $conn->prepare("
+    $stmt = $pdo->prepare("
         SELECT 
             vp.id,
             p.titre as formation,
@@ -396,10 +401,10 @@ function getDashboardVendeur($conn, $userId) {
         LIMIT 20
     ");
     $stmt->execute([$userId]);
-    $ventesRecentes = $stmt->fetchAll();
+    $ventesRecentes = $stmt->fetchAll(PDO::FETCH_ASSOC);
     
     // Demandes de retrait
-    $stmt = $conn->prepare("
+    $stmt = $pdo->prepare("
         SELECT 
             dr.id,
             dr.montant,
@@ -414,7 +419,7 @@ function getDashboardVendeur($conn, $userId) {
         LIMIT 5
     ");
     $stmt->execute([$userId]);
-    $demandesRetrait = $stmt->fetchAll();
+    $demandesRetrait = $stmt->fetchAll(PDO::FETCH_ASSOC);
     
     return [
         'soldes' => $soldesComplets,

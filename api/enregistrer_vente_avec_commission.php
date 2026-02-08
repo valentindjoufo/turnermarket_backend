@@ -1,5 +1,13 @@
 <?php
-// enregistrer_vente_avec_commission.php - VERSION FINALE AVEC NOTIFICATIONS
+/**
+ * enregistrer_vente_avec_commission.php - VERSION FINALE AVEC NOTIFICATIONS
+ * Version avec connexion PostgreSQL via config.php
+ */
+
+// 📦 Inclusion de la configuration (connexion PDO PostgreSQL)
+require_once 'config.php';
+
+// 🚦 Configuration des headers
 header("Access-Control-Allow-Origin: *");
 header("Access-Control-Allow-Headers: Content-Type");
 header("Access-Control-Allow-Methods: POST, OPTIONS");
@@ -10,7 +18,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
     exit();
 }
 
-// Configuration
+// 🔧 Configuration
 define('COMMISSION_ADMIN_POURCENTAGE', 15);
 define('PAYUNIT_API_KEY', 'sand_T4nATpvLqMU0pvxf4CNlkmv0XDAtvy');
 define('PAYUNIT_SITE_ID', '9119c933-688d-4db9-9d5f-5b2050a88ad2');
@@ -21,7 +29,7 @@ define('API_NOTIFIER', 'http://10.97.71.236/gestvente/api/notifier.php');
 /**
  * 🔔 Envoyer une notification via l'API
  */
-function envoyerNotification($conn, $userId, $titre, $message, $type = 'info', $lien = null) {
+function envoyerNotification($userId, $titre, $message, $type = 'info', $lien = null) {
     try {
         $postData = json_encode([
             'utilisateurId' => $userId,
@@ -97,7 +105,7 @@ function notifierPartiesTransaction($transactionId, $type, $extraData = []) {
 }
 
 /**
- * Effectue un paiement Mobile Money via API PayUnit
+ * 💳 Effectue un paiement Mobile Money via API PayUnit
  */
 function effectuerPaiementPayUnitAPI($montant, $numeroTel, $transactionId, $nomClient) {
     $numeroTelFormate = preg_replace('/[^0-9]/', '', $numeroTel);
@@ -180,7 +188,7 @@ function effectuerPaiementPayUnitAPI($montant, $numeroTel, $transactionId, $nomC
 }
 
 /**
- * Paiement simulé pour les tests
+ * 🧪 Paiement simulé pour les tests
  */
 function effectuerPaiementSimule($montant, $numeroTel, $transactionId, $nomClient) {
     error_log("=== PAIEMENT SIMULÉ (MODE TEST) ===");
@@ -196,7 +204,7 @@ function effectuerPaiementSimule($montant, $numeroTel, $transactionId, $nomClien
 }
 
 /**
- * Calcule les commissions
+ * 🧮 Calcule les commissions
  */
 function calculerCommissions($montantTotal) {
     $commissionAdmin = ($montantTotal * COMMISSION_ADMIN_POURCENTAGE) / 100;
@@ -211,8 +219,10 @@ function calculerCommissions($montantTotal) {
 }
 
 try {
-    $conn = new PDO("mysql:host=localhost;dbname=gestvente;charset=utf8", "root", "");
-    $conn->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
+    // 💾 Vérification que la connexion PDO est bien disponible
+    if (!isset($pdo) || !($pdo instanceof PDO)) {
+        throw new Exception("Connexion à la base de données non disponible");
+    }
 
     $data = json_decode(file_get_contents("php://input"), true);
 
@@ -229,8 +239,8 @@ try {
     if ($total < 100) throw new Exception("Montant minimum: 100 FCFA");
     if ($total > 1000000) throw new Exception("Montant maximum: 1,000,000 FCFA");
 
-    // Infos client
-    $stmt = $conn->prepare("SELECT id, nom, telephone, email, role FROM Utilisateur WHERE id = ?");
+    // 👤 Infos client
+    $stmt = $pdo->prepare("SELECT id, nom, telephone, email, role FROM Utilisateur WHERE id = ?");
     $stmt->execute([$acheteurId]);
     $acheteurInfo = $stmt->fetch(PDO::FETCH_ASSOC);
     
@@ -245,7 +255,7 @@ try {
     $numeroTelNettoye = preg_replace('/[^0-9]/', '', $numeroTel);
     if (strlen($numeroTelNettoye) < 9) throw new Exception("Numéro invalide");
 
-    // Traitement produits
+    // 📦 Traitement produits
     $produitsDetails = [];
     $venteursUniques = [];
     $totalVerifie = 0;
@@ -262,7 +272,7 @@ try {
         if ($quantite <= 0) throw new Exception("Quantité invalide");
         if ($prixUnitaire <= 0) throw new Exception("Prix invalide");
 
-        $stmt = $conn->prepare("
+        $stmt = $pdo->prepare("
             SELECT p.id, p.titre, p.prix, p.vendeurId, u.nom as vendeurNom, u.email as vendeurEmail
             FROM Produit p 
             INNER JOIN Utilisateur u ON p.vendeurId = u.id
@@ -295,7 +305,7 @@ try {
         throw new Exception("Incohérence dans le calcul du total");
     }
 
-    // Calcul commissions
+    // 🧮 Calcul commissions
     $commissionsCalculees = [];
     foreach ($venteursUniques as $vendeurId => $vendeurInfo) {
         $commissions = calculerCommissions($vendeurInfo['montant_brut']);
@@ -309,7 +319,7 @@ try {
     error_log("Montant: $total FCFA");
     error_log("Transaction ID: $transactionId");
 
-    // Paiement Mobile Money
+    // 💳 Paiement Mobile Money
     if ($modePaiement === 'Mobile Money') {
         try {
             if (MODE_TEST) {
@@ -322,11 +332,11 @@ try {
                 throw new Exception("Le paiement a échoué");
             }
 
-            $conn->beginTransaction();
+            $pdo->beginTransaction();
 
             $statutVente = MODE_TEST ? 'confirme' : 'en_attente';
             
-            $stmt = $conn->prepare("
+            $stmt = $pdo->prepare("
                 INSERT INTO Vente (utilisateurId, total, modePaiement, numeroMobile, pays, transactionId, date, statut)
                 VALUES (?, ?, ?, ?, ?, ?, NOW(), ?)
             ");
@@ -339,14 +349,14 @@ try {
                 $transactionId,
                 $statutVente
             ]);
-            $venteId = $conn->lastInsertId();
+            $venteId = $pdo->lastInsertId();
 
             error_log("Vente enregistrée - ID: $venteId (statut: $statutVente)");
 
-            // Enregistrer produits
+            // 📝 Enregistrer produits
             $achetee = MODE_TEST ? 1 : 0;
             
-            $stmtInsertProduit = $conn->prepare("
+            $stmtInsertProduit = $pdo->prepare("
                 INSERT INTO VenteProduit (venteId, produitId, quantite, prixUnitaire, achetee, vendeurId)
                 VALUES (?, ?, ?, ?, ?, ?)
             ");
@@ -372,13 +382,13 @@ try {
                 ]);
             }
 
-            // ENREGISTREMENT COMMISSIONS
-            $stmtCommission = $conn->prepare("
+            // 💰 ENREGISTREMENT COMMISSIONS
+            $stmtCommission = $pdo->prepare("
                 INSERT INTO Commission (venteId, vendeurId, montantTotal, montantVendeur, montantAdmin, pourcentageCommission, statut, dateCreation, dateTraitement)
                 VALUES (?, ?, ?, ?, ?, ?, ?, NOW(), ?)
             ");
 
-            $stmtUpdateSolde = $conn->prepare("
+            $stmtUpdateSolde = $pdo->prepare("
                 UPDATE Utilisateur 
                 SET soldeVendeur = soldeVendeur + ?, nbVentes = nbVentes + 1 
                 WHERE id = ?
@@ -408,7 +418,7 @@ try {
                 }
             }
 
-            $conn->commit();
+            $pdo->commit();
 
             // 🔔 NOTIFICATIONS AUTOMATIQUES
             if (MODE_TEST && $statutVente === 'confirme') {
@@ -417,7 +427,6 @@ try {
             } else {
                 // En production, notifier que le paiement est en attente
                 envoyerNotification(
-                    $conn,
                     $acheteurId,
                     '⏳ Paiement en cours',
                     "Votre paiement de $total FCFA est en cours de traitement. Vous recevrez une confirmation sous peu.",
@@ -450,27 +459,27 @@ try {
             ]);
 
         } catch (Exception $e) {
-            if (isset($conn) && $conn->inTransaction()) {
-                $conn->rollBack();
+            if (isset($pdo) && $pdo->inTransaction()) {
+                $pdo->rollBack();
             }
-            error_log("ERREUR PAIEMENT: " . $e->getMessage());
+            error_log("❌ ERREUR PAIEMENT: " . $e->getMessage());
             throw $e;
         }
 
     } else {
-        // Autres modes de paiement
-        $conn->beginTransaction();
+        // 💳 Autres modes de paiement
+        $pdo->beginTransaction();
 
-        $stmt = $conn->prepare("
+        $stmt = $pdo->prepare("
             INSERT INTO Vente (utilisateurId, total, modePaiement, numeroMobile, pays, transactionId, date, statut)
             VALUES (?, ?, ?, ?, ?, ?, NOW(), 'confirme')
         ");
         $stmt->execute([$acheteurId, $total, $modePaiement, $numeroTel, $pays, $transactionId]);
-        $venteId = $conn->lastInsertId();
+        $venteId = $pdo->lastInsertId();
 
-        $stmtInsertProduit = $conn->prepare("
+        $stmtInsertProduit = $pdo->prepare("
             INSERT INTO VenteProduit (venteId, produitId, quantite, prixUnitaire, achetee, vendeurId)
-            VALUES (?, ?, ?, ?, 1, ?)
+            VALUES (?, ?, ?, ?, TRUE, ?)
         ");
 
         foreach ($produits as $prod) {
@@ -491,12 +500,12 @@ try {
             ]);
         }
 
-        $stmtCommission = $conn->prepare("
+        $stmtCommission = $pdo->prepare("
             INSERT INTO Commission (venteId, vendeurId, montantTotal, montantVendeur, montantAdmin, pourcentageCommission, statut, dateCreation, dateTraitement)
             VALUES (?, ?, ?, ?, ?, ?, 'disponible', NOW(), NOW())
         ");
 
-        $stmtUpdateSolde = $conn->prepare("
+        $stmtUpdateSolde = $pdo->prepare("
             UPDATE Utilisateur 
             SET soldeVendeur = soldeVendeur + ?, nbVentes = nbVentes + 1 
             WHERE id = ?
@@ -518,7 +527,7 @@ try {
             ]);
         }
 
-        $conn->commit();
+        $pdo->commit();
 
         // 🔔 Notifications
         notifierPartiesTransaction($transactionId, 'paiement_confirme');
@@ -532,9 +541,24 @@ try {
         ]);
     }
 
+} catch (PDOException $e) {
+    // ❌ Erreur de base de données
+    if (isset($pdo) && $pdo->inTransaction()) {
+        $pdo->rollBack();
+    }
+    error_log("=== ERREUR BDD GLOBALE ===");
+    error_log($e->getMessage());
+    
+    echo json_encode([
+        "success" => false,
+        "message" => "Erreur de base de données",
+        "debug" => $e->getMessage(),
+        "mode" => MODE_TEST ? 'TEST' : 'PRODUCTION'
+    ]);
+    
 } catch (Exception $e) {
-    if (isset($conn) && $conn->inTransaction()) {
-        $conn->rollBack();
+    if (isset($pdo) && $pdo->inTransaction()) {
+        $pdo->rollBack();
     }
     error_log("=== ERREUR GLOBALE ===");
     error_log($e->getMessage());

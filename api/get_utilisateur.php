@@ -1,5 +1,13 @@
 <?php
-// 🔐 Configuration CORS
+/**
+ * gestion_utilisateurs.php - CRUD complet pour les utilisateurs
+ * Version avec connexion PostgreSQL via config.php
+ */
+
+// 📦 Inclusion de la configuration (connexion PDO PostgreSQL)
+require_once 'config.php';
+
+// 🚦 Configuration CORS
 header("Access-Control-Allow-Origin: *");
 header("Access-Control-Allow-Headers: Content-Type, Authorization");
 header("Access-Control-Allow-Methods: GET, POST, PUT, DELETE, OPTIONS");
@@ -10,8 +18,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
     http_response_code(200);
     exit();
 }
-
-require 'config.php'; // Connexion PDO via $pdo
 
 // ✅ CORRIGÉ : Configuration de l'URL de base pour les photos
 define('BASE_URL', '/api/');  // ✅ Chemin relatif - fonctionne avec ngrok ET localhost
@@ -33,13 +39,18 @@ function getJsonInput() {
     $data = json_decode($input, true);
     
     if (json_last_error() !== JSON_ERROR_NONE) {
-        sendJsonResponse(['error' => 'Format JSON invalide: ' . json_last_error_msg()], 400);
+        sendJsonResponse(['success' => false, 'error' => 'Format JSON invalide: ' . json_last_error_msg()], 400);
     }
     
     return $data ?: [];
 }
 
 try {
+    // 💾 Vérification que la connexion PDO est bien disponible
+    if (!isset($pdo) || !($pdo instanceof PDO)) {
+        throw new Exception("Connexion à la base de données non disponible");
+    }
+
     // ==================== GET : RÉCUPÉRATION ====================
     if ($_SERVER['REQUEST_METHOD'] === 'GET') {
         
@@ -47,7 +58,7 @@ try {
         if (isset($_GET['id'])) {
             $id = intval($_GET['id']);
             if ($id <= 0) {
-                sendJsonResponse(['error' => 'ID utilisateur invalide'], 400);
+                sendJsonResponse(['success' => false, 'error' => 'ID utilisateur invalide'], 400);
             }
             
             // 🆕 PARAMÈTRE OPTIONNEL : currentUserId pour vérifier si on suit cet utilisateur
@@ -118,7 +129,7 @@ try {
             $utilisateur = $stmt->fetch(PDO::FETCH_ASSOC);
 
             if (!$utilisateur) {
-                sendJsonResponse(['error' => 'Utilisateur non trouvé'], 404);
+                sendJsonResponse(['success' => false, 'error' => 'Utilisateur non trouvé'], 404);
             }
 
             // Nettoyer et formater les données
@@ -151,8 +162,14 @@ try {
             $utilisateur['soldeVendeur'] = floatval($utilisateur['soldeVendeur']);
             $utilisateur['nbVentes'] = intval($utilisateur['nbVentes']);
 
+            error_log("✅ Utilisateur récupéré - ID: $id, Nom: " . $utilisateur['nom']);
+
             // ✅ Retourner encapsulé dans 'utilisateur'
-            sendJsonResponse(['utilisateur' => $utilisateur]);
+            sendJsonResponse([
+                'success' => true,
+                'utilisateur' => $utilisateur,
+                'timestamp' => date('Y-m-d H:i:s')
+            ]);
 
         } else {
             // ✅ GET sans id : liste des utilisateurs AVEC VRAIS COMPTEURS
@@ -193,6 +210,8 @@ try {
             ");
             $utilisateurs = $stmt->fetchAll(PDO::FETCH_ASSOC);
 
+            error_log("✅ Liste utilisateurs récupérée - Total: " . count($utilisateurs));
+
             // Nettoyer et formater les données
             $utilisateurs = array_map(function($utilisateur) {
                 $utilisateur = array_map(function($value) {
@@ -222,7 +241,12 @@ try {
                 return $utilisateur;
             }, $utilisateurs);
 
-            sendJsonResponse(['utilisateurs' => $utilisateurs]);
+            sendJsonResponse([
+                'success' => true,
+                'utilisateurs' => $utilisateurs,
+                'count' => count($utilisateurs),
+                'timestamp' => date('Y-m-d H:i:s')
+            ]);
         }
     }
     
@@ -232,11 +256,13 @@ try {
 
         // 🆕 CRÉATION d'un nouvel utilisateur
         if (isset($data['action']) && $data['action'] === 'creer') {
+            error_log("🆕 Création d'un nouvel utilisateur");
+            
             // Validation des champs requis
             $champsRequis = ['matricule', 'nom', 'email', 'telephone', 'role'];
             foreach ($champsRequis as $champ) {
                 if (!isset($data[$champ]) || empty(trim($data[$champ]))) {
-                    sendJsonResponse(['error' => "Le champ '$champ' est requis"], 400);
+                    sendJsonResponse(['success' => false, 'error' => "Le champ '$champ' est requis"], 400);
                 }
             }
 
@@ -251,21 +277,21 @@ try {
 
             // Validation email
             if (!filter_var($email, FILTER_VALIDATE_EMAIL)) {
-                sendJsonResponse(['error' => 'Format d\'email invalide'], 400);
+                sendJsonResponse(['success' => false, 'error' => 'Format d\'email invalide'], 400);
             }
 
             // Vérifier si l'email existe déjà
             $stmt = $pdo->prepare("SELECT id FROM Utilisateur WHERE email = ?");
             $stmt->execute([$email]);
             if ($stmt->fetch()) {
-                sendJsonResponse(['error' => 'Cet email est déjà utilisé'], 409);
+                sendJsonResponse(['success' => false, 'error' => 'Cet email est déjà utilisé'], 409);
             }
 
             // Vérifier si le matricule existe déjà
             $stmt = $pdo->prepare("SELECT id FROM Utilisateur WHERE matricule = ?");
             $stmt->execute([$matricule]);
             if ($stmt->fetch()) {
-                sendJsonResponse(['error' => 'Ce matricule est déjà utilisé'], 409);
+                sendJsonResponse(['success' => false, 'error' => 'Ce matricule est déjà utilisé'], 409);
             }
 
             // Insertion du nouvel utilisateur
@@ -288,13 +314,17 @@ try {
 
             if ($success) {
                 $newId = $pdo->lastInsertId();
+                error_log("✅ Utilisateur créé avec succès - ID: $newId, Nom: $nom");
+                
                 sendJsonResponse([
                     'success' => true, 
                     'message' => 'Utilisateur créé avec succès',
-                    'id' => $newId
+                    'id' => $newId,
+                    'timestamp' => date('Y-m-d H:i:s')
                 ]);
             } else {
-                sendJsonResponse(['error' => 'Erreur lors de la création de l\'utilisateur'], 500);
+                error_log("❌ Erreur lors de la création de l'utilisateur");
+                sendJsonResponse(['success' => false, 'error' => 'Erreur lors de la création de l\'utilisateur'], 500);
             }
         }
         
@@ -304,20 +334,26 @@ try {
             $etat = trim($data['etat']);
             
             if ($id <= 0) {
-                sendJsonResponse(['error' => 'ID utilisateur invalide'], 400);
+                sendJsonResponse(['success' => false, 'error' => 'ID utilisateur invalide'], 400);
             }
             
             if (!in_array($etat, ['actif', 'inactif'])) {
-                sendJsonResponse(['error' => "Valeur de 'etat' invalide"], 400);
+                sendJsonResponse(['success' => false, 'error' => "Valeur de 'etat' invalide"], 400);
             }
 
             $stmt = $pdo->prepare("UPDATE Utilisateur SET etat = ? WHERE id = ?");
             $success = $stmt->execute([$etat, $id]);
 
             if ($success && $stmt->rowCount() > 0) {
-                sendJsonResponse(['success' => true, 'message' => "État mis à jour en '$etat'"]);
+                error_log("✅ État utilisateur mis à jour - ID: $id, État: $etat");
+                sendJsonResponse([
+                    'success' => true, 
+                    'message' => "État mis à jour en '$etat'",
+                    'timestamp' => date('Y-m-d H:i:s')
+                ]);
             } else {
-                sendJsonResponse(['error' => "Utilisateur non trouvé ou pas de changement"], 404);
+                error_log("⚠️ Utilisateur non trouvé ou pas de changement - ID: $id");
+                sendJsonResponse(['success' => false, 'error' => "Utilisateur non trouvé ou pas de changement"], 404);
             }
         }
         
@@ -326,7 +362,7 @@ try {
             $id = intval($data['id']);
             
             if ($id <= 0) {
-                sendJsonResponse(['error' => 'ID utilisateur invalide'], 400);
+                sendJsonResponse(['success' => false, 'error' => 'ID utilisateur invalide'], 400);
             }
 
             // Récupérer la photo avant suppression
@@ -339,6 +375,7 @@ try {
                 $filePath = __DIR__ . '/' . $utilisateur['photoProfil'];
                 if (file_exists($filePath)) {
                     unlink($filePath);
+                    error_log("🗑️ Photo utilisateur supprimée - Chemin: $filePath");
                 }
             }
 
@@ -347,14 +384,20 @@ try {
             $success = $stmt->execute([$id]);
 
             if ($success && $stmt->rowCount() > 0) {
-                sendJsonResponse(['success' => true, 'message' => "Utilisateur supprimé avec succès"]);
+                error_log("✅ Utilisateur supprimé - ID: $id");
+                sendJsonResponse([
+                    'success' => true, 
+                    'message' => "Utilisateur supprimé avec succès",
+                    'timestamp' => date('Y-m-d H:i:s')
+                ]);
             } else {
-                sendJsonResponse(['error' => "Utilisateur non trouvé"], 404);
+                error_log("❌ Utilisateur non trouvé pour suppression - ID: $id");
+                sendJsonResponse(['success' => false, 'error' => "Utilisateur non trouvé"], 404);
             }
         }
         
         else {
-            sendJsonResponse(['error' => "Action invalide ou paramètres manquants"], 400);
+            sendJsonResponse(['success' => false, 'error' => "Action invalide ou paramètres manquants"], 400);
         }
     }
     
@@ -363,12 +406,12 @@ try {
         $data = getJsonInput();
 
         if (!isset($data['id'])) {
-            sendJsonResponse(['error' => "Paramètre 'id' requis"], 400);
+            sendJsonResponse(['success' => false, 'error' => "Paramètre 'id' requis"], 400);
         }
 
         $id = intval($data['id']);
         if ($id <= 0) {
-            sendJsonResponse(['error' => 'ID utilisateur invalide'], 400);
+            sendJsonResponse(['success' => false, 'error' => 'ID utilisateur invalide'], 400);
         }
 
         // Vérifier si l'utilisateur existe
@@ -377,7 +420,7 @@ try {
         $utilisateurExistant = $stmt->fetch(PDO::FETCH_ASSOC);
 
         if (!$utilisateurExistant) {
-            sendJsonResponse(['error' => 'Utilisateur non trouvé'], 404);
+            sendJsonResponse(['success' => false, 'error' => 'Utilisateur non trouvé'], 404);
         }
 
         // Vérifier l'unicité de l'email si modifié
@@ -385,13 +428,13 @@ try {
             $email = trim($data['email']);
             
             if (!filter_var($email, FILTER_VALIDATE_EMAIL)) {
-                sendJsonResponse(['error' => 'Format d\'email invalide'], 400);
+                sendJsonResponse(['success' => false, 'error' => 'Format d\'email invalide'], 400);
             }
             
             $stmt = $pdo->prepare("SELECT id FROM Utilisateur WHERE email = ? AND id != ?");
             $stmt->execute([$email, $id]);
             if ($stmt->fetch()) {
-                sendJsonResponse(['error' => 'Cet email est déjà utilisé'], 409);
+                sendJsonResponse(['success' => false, 'error' => 'Cet email est déjà utilisé'], 409);
             }
         }
 
@@ -401,7 +444,7 @@ try {
             $stmt = $pdo->prepare("SELECT id FROM Utilisateur WHERE matricule = ? AND id != ?");
             $stmt->execute([$matricule, $id]);
             if ($stmt->fetch()) {
-                sendJsonResponse(['error' => 'Ce matricule est déjà utilisé'], 409);
+                sendJsonResponse(['success' => false, 'error' => 'Ce matricule est déjà utilisé'], 409);
             }
         }
 
@@ -429,7 +472,7 @@ try {
         }
 
         if (empty($updates)) {
-            sendJsonResponse(['error' => 'Aucune donnée à mettre à jour'], 400);
+            sendJsonResponse(['success' => false, 'error' => 'Aucune donnée à mettre à jour'], 400);
         }
 
         $params[] = $id;
@@ -438,21 +481,27 @@ try {
         $success = $stmt->execute($params);
 
         if ($success) {
-            sendJsonResponse(['success' => true, 'message' => 'Utilisateur mis à jour avec succès']);
+            error_log("✅ Utilisateur mis à jour - ID: $id");
+            sendJsonResponse([
+                'success' => true, 
+                'message' => 'Utilisateur mis à jour avec succès',
+                'timestamp' => date('Y-m-d H:i:s')
+            ]);
         } else {
-            sendJsonResponse(['error' => 'Erreur lors de la mise à jour'], 500);
+            error_log("❌ Erreur lors de la mise à jour utilisateur - ID: $id");
+            sendJsonResponse(['success' => false, 'error' => 'Erreur lors de la mise à jour'], 500);
         }
     }
     
     // ==================== DELETE : SUPPRESSION ====================
     elseif ($_SERVER['REQUEST_METHOD'] === 'DELETE') {
         if (!isset($_GET['id'])) {
-            sendJsonResponse(['error' => "Paramètre 'id' requis"], 400);
+            sendJsonResponse(['success' => false, 'error' => "Paramètre 'id' requis"], 400);
         }
 
         $id = intval($_GET['id']);
         if ($id <= 0) {
-            sendJsonResponse(['error' => 'ID utilisateur invalide'], 400);
+            sendJsonResponse(['success' => false, 'error' => 'ID utilisateur invalide'], 400);
         }
 
         // Récupérer la photo avant suppression
@@ -465,6 +514,7 @@ try {
             $filePath = __DIR__ . '/' . $utilisateur['photoProfil'];
             if (file_exists($filePath)) {
                 unlink($filePath);
+                error_log("🗑️ Photo utilisateur supprimée - Chemin: $filePath");
             }
         }
 
@@ -473,22 +523,37 @@ try {
         $success = $stmt->execute([$id]);
 
         if ($success && $stmt->rowCount() > 0) {
-            sendJsonResponse(['success' => true, 'message' => "Utilisateur supprimé avec succès"]);
+            error_log("✅ Utilisateur supprimé - ID: $id");
+            sendJsonResponse([
+                'success' => true, 
+                'message' => "Utilisateur supprimé avec succès",
+                'timestamp' => date('Y-m-d H:i:s')
+            ]);
         } else {
-            sendJsonResponse(['error' => "Utilisateur non trouvé"], 404);
+            error_log("❌ Utilisateur non trouvé pour suppression - ID: $id");
+            sendJsonResponse(['success' => false, 'error' => "Utilisateur non trouvé"], 404);
         }
     }
     
     // ==================== MÉTHODE NON AUTORISÉE ====================
     else {
-        sendJsonResponse(['error' => 'Méthode non autorisée'], 405);
+        sendJsonResponse(['success' => false, 'error' => 'Méthode non autorisée'], 405);
     }
     
 } catch (PDOException $e) {
-    error_log("Erreur PDO: " . $e->getMessage());
-    sendJsonResponse(['error' => 'Erreur de base de données'], 500);
+    error_log("❌ ERREUR PDO GESTION UTILISATEURS: " . $e->getMessage());
+    sendJsonResponse([
+        'success' => false, 
+        'error' => 'Erreur de base de données',
+        'debug' => $e->getMessage(),
+        'timestamp' => date('Y-m-d H:i:s')
+    ], 500);
 } catch (Exception $e) {
-    error_log("Erreur générale: " . $e->getMessage());
-    sendJsonResponse(['error' => 'Erreur interne du serveur'], 500);
+    error_log("❌ ERREUR GÉNÉRALE GESTION UTILISATEURS: " . $e->getMessage());
+    sendJsonResponse([
+        'success' => false, 
+        'error' => 'Erreur interne du serveur',
+        'timestamp' => date('Y-m-d H:i:s')
+    ], 500);
 }
 ?>

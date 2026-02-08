@@ -1,4 +1,7 @@
 <?php
+// 📁 Inclure la configuration de connexion PostgreSQL (même répertoire)
+require_once __DIR__ . '/config.php';
+
 header("Access-Control-Allow-Origin: *");
 header("Access-Control-Allow-Methods: POST, OPTIONS");
 header("Access-Control-Allow-Headers: Content-Type");
@@ -161,16 +164,9 @@ try {
         throw new Exception('ID utilisateur invalide');
     }
 
-    // 2. Connexion base de données
-    try {
-        $pdo = new PDO("mysql:host=localhost;dbname=gestvente;charset=utf8mb4", "root", "");
-        $pdo->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
-        logDebug("Connexion BDD réussie");
-    } catch (PDOException $e) {
-        logDebug("Erreur connexion BDD: " . $e->getMessage());
-        throw new Exception('Erreur de connexion à la base de données');
-    }
-
+    // ✅ Connexion PostgreSQL déjà établie via config.php
+    // $pdo est déjà disponible dans la même portée
+    
     // 3. Vérification formation
     $stmt = $pdo->prepare("SELECT id, vendeurId FROM Produit WHERE id = ?");
     $stmt->execute([$produitId]);
@@ -340,12 +336,17 @@ try {
     logDebug("Résultat - Vidéo segments: " . count($videoSegments) . 
              ", Preview segments: " . count($previewSegments));
 
-    // 15. Vérifier colonnes table Video
-    $checkColumns = $pdo->query("SHOW COLUMNS FROM Video");
-    $existingColumns = $checkColumns->fetchAll(PDO::FETCH_COLUMN);
-    $hasDescription = in_array('description', $existingColumns);
-    
-    logDebug("Colonne 'description' existe: " . ($hasDescription ? 'OUI' : 'NON'));
+    // 15. Vérifier colonnes table Video (PostgreSQL)
+    try {
+        $checkColumns = $pdo->query("SELECT column_name FROM information_schema.columns WHERE table_name = 'video'");
+        $existingColumns = $checkColumns->fetchAll(PDO::FETCH_COLUMN, 0);
+        $hasDescription = in_array('description', $existingColumns);
+        
+        logDebug("Colonne 'description' existe: " . ($hasDescription ? 'OUI' : 'NON'));
+    } catch (Exception $e) {
+        logDebug("Erreur vérification colonnes: " . $e->getMessage());
+        $hasDescription = false;
+    }
 
     // ✅ Insertion segments BDD
     try {

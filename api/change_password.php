@@ -11,7 +11,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
     exit();
 }
 
-require 'config.php'; // connexion PDO $pdo
+require 'config.php'; // connexion PDO $pdo est maintenant disponible
 
 $data = json_decode(file_get_contents('php://input'), true);
 
@@ -48,8 +48,10 @@ try {
     $update = $pdo->prepare("UPDATE Utilisateur SET motDePasse = ? WHERE id = ?");
     $update->execute([$newHash, $id]);
 
-    echo json_encode(['success' => true]);
+    echo json_encode(['success' => true, 'message' => 'Mot de passe mis à jour avec succès']);
+    
 } catch (PDOException $e) {
     http_response_code(500);
     echo json_encode(['success' => false, 'message' => 'Erreur serveur : ' . $e->getMessage()]);
+    error_log("❌ ERREUR changement mot de passe : " . $e->getMessage());
 }

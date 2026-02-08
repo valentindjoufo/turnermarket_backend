@@ -1,5 +1,9 @@
 <?php
 // send_push_notification.php - Envoyer une notification push via Node.js
+
+// Inclure la configuration de connexion à la base de données
+require_once 'config.php';
+
 header("Access-Control-Allow-Origin: *");
 header("Access-Control-Allow-Methods: POST, OPTIONS");
 header("Access-Control-Allow-Headers: Content-Type, Authorization");
@@ -44,23 +48,16 @@ try {
         throw new Exception("userId invalide");
     }
     
-    // Connexion à la base de données
-    $host = 'localhost';
-    $dbname = 'gestvente';
-    $username = 'root';
-    $password = '';
-    
-    $conn = new PDO("mysql:host=$host;dbname=$dbname;charset=utf8mb4", $username, $password);
-    $conn->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
+    // La variable $pdo est déjà définie dans config.php
     
     // 1. Sauvegarder dans la table Notification
-    $stmt = $conn->prepare("
+    $stmt = $pdo->prepare("
         INSERT INTO Notification (utilisateurId, titre, message, type, lien, estLu, dateCreation) 
         VALUES (?, ?, ?, ?, ?, 0, NOW())
     ");
     $stmt->execute([$userId, $titre, $message, $type, $lien]);
     
-    $notificationId = $conn->lastInsertId();
+    $notificationId = $pdo->lastInsertId();
     
     error_log("✅ Notification créée avec ID: $notificationId pour user: $userId");
     

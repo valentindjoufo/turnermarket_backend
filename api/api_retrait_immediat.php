@@ -1,11 +1,11 @@
 <?php
-// api_retrait_immediat.php - Version corrigée avec gestion d'erreurs améliorée
+// api_retrait_immediat.php - Version avec connexion via config.php
 header("Access-Control-Allow-Origin: *");
 header("Access-Control-Allow-Headers: Content-Type, Authorization");
 header("Access-Control-Allow-Methods: GET, POST, OPTIONS");
 header("Content-Type: application/json; charset=UTF-8");
 
-// Désactiver l'affichage des erreurs PHP (importantes pour éviter l'erreur HTML)
+// Désactiver l'affichage des erreurs PHP
 ini_set('display_errors', 0);
 error_reporting(E_ALL);
 
@@ -14,18 +14,19 @@ if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
     exit();
 }
 
-// Configuration
+// Inclure le fichier de configuration pour la connexion à la base de données
+require_once 'config.php';
+// Maintenant, la variable $pdo est disponible depuis config.php
+
+// Configuration des retraits
 define('MONTANT_MINIMUM_RETRAIT', 1000);
 define('FRAIS_RETRAIT_POURCENTAGE', 2);
 define('FRAIS_RETRAIT_FIXE', 100);
 
-// Variable pour la connexion
-$conn = null;
+// Utiliser la connexion $pdo de config.php
+$conn = $pdo;
 
 try {
-    $conn = new PDO("mysql:host=localhost;dbname=gestvente;charset=utf8", "root", "");
-    $conn->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
-
     $method = $_SERVER['REQUEST_METHOD'];
 
     // ========================================
@@ -123,6 +124,7 @@ try {
                     commentaire
                 )
                 VALUES (:userId, :montant, :methode, :numero, 'paye', NOW(), NOW(), 'Retrait immédiat automatique')
+                RETURNING id
             ");
             $stmt->execute([
                 'userId' => $utilisateurId,
@@ -130,7 +132,8 @@ try {
                 'methode' => $methodePaiement,
                 'numero' => $numeroCompte
             ]);
-            $demandeId = $conn->lastInsertId();
+            $result = $stmt->fetch(PDO::FETCH_ASSOC);
+            $demandeId = $result['id'];
 
             // 2️⃣ DÉBITER LE SOLDE - Marquer les commissions comme "retire"
             $montantRestant = $montantTotal;

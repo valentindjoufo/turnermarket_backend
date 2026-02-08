@@ -1,33 +1,25 @@
 <?php
-// Autorisations CORS complètes
+/**
+ * formations.php - Gestion des formations (CRUD complet)
+ * Version avec connexion PostgreSQL via config.php
+ */
+
+// 📦 Inclusion de la configuration (connexion PDO PostgreSQL)
+require_once 'config.php';
+
+// 🚦 Configuration des headers CORS
 header("Access-Control-Allow-Origin: *");
 header("Access-Control-Allow-Methods: GET, POST, PUT, DELETE, OPTIONS");
 header("Access-Control-Allow-Headers: Content-Type, Authorization, X-Requested-With");
 header("Content-Type: application/json; charset=UTF-8");
 
-// Répondre au préflight (OPTIONS) et sortir immédiatement
+// 📤 Répondre au préflight (OPTIONS) et sortir immédiatement
 if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
     http_response_code(200);
     exit;
 }
 
-// Connexion à la base de données
-$host = 'localhost';
-$dbname = 'gestvente';
-$user = 'root';
-$password = '';
-
-try {
-    $pdo = new PDO("mysql:host=$host;dbname=$dbname;charset=utf8", $user, $password);
-    $pdo->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
-} catch (PDOException $e) {
-    error_log("Erreur connexion: " . $e->getMessage());
-    http_response_code(500);
-    echo json_encode(['error' => 'Erreur de connexion', 'details' => $e->getMessage()]);
-    exit;
-}
-
-// Répertoire des uploads
+// 📁 Répertoire des uploads
 define('UPLOAD_DIR', __DIR__ . '/uploads/');
 if (!is_dir(UPLOAD_DIR)) {
     mkdir(UPLOAD_DIR, 0755, true);
@@ -35,14 +27,13 @@ if (!is_dir(UPLOAD_DIR)) {
 
 $method = $_SERVER['REQUEST_METHOD'];
 
-// Utilitaire pour lire JSON depuis php://input
-function getJsonInput()
-{
+// 📥 Utilitaire pour lire JSON depuis php://input
+function getJsonInput() {
     $data = json_decode(file_get_contents("php://input"), true);
     return is_array($data) ? $data : [];
 }
 
-// Fonction pour formater les dates pour l'affichage
+// 📅 Fonction pour formater les dates pour l'affichage
 function formatDateForDisplay($dateString) {
     if (empty($dateString)) return null;
     try {
@@ -53,16 +44,14 @@ function formatDateForDisplay($dateString) {
     }
 }
 
-// ------------------------
 // 📚 GET - Récupérer les formations
-// ------------------------
 if ($method === 'GET') {
     try {
         $userId = isset($_GET['userId']) ? intval($_GET['userId']) : 0;
         $vendeurId = isset($_GET['vendeurId']) ? intval($_GET['vendeurId']) : null;
-        $mode = isset($_GET['mode']) ? $_GET['mode'] : 'all'; // ✅ NOUVEAU: Mode de filtrage
+        $mode = isset($_GET['mode']) ? $_GET['mode'] : 'all';
         
-        // ✅ MODE "FOLLOWING" - Formations des comptes suivis
+        // 👥 MODE "FOLLOWING" - Formations des comptes suivis
         if ($mode === 'following') {
             if ($userId <= 0) {
                 echo json_encode([]);
@@ -92,7 +81,7 @@ if ($method === 'GET') {
                         WHEN EXISTS (
                             SELECT 1 FROM VenteProduit vp 
                             JOIN Vente v ON v.id = vp.venteId 
-                            WHERE vp.produitId = p.id AND v.utilisateurId = :userId AND vp.achetee = 1
+                            WHERE vp.produitId = p.id AND v.utilisateurId = :userId AND vp.achetee = TRUE
                         ) THEN 1 ELSE 0
                     END AS achetee,
                     COALESCE(r.likes, 0) AS likes,
@@ -132,7 +121,7 @@ if ($method === 'GET') {
             exit;
         }
         
-        // ✅ MODE "POPULAR" - Formations populaires
+        // 🔥 MODE "POPULAR" - Formations populaires
         if ($mode === 'popular') {
             $sql = "
                 SELECT p.*, 
@@ -162,7 +151,7 @@ if ($method === 'GET') {
                         WHEN EXISTS (
                             SELECT 1 FROM VenteProduit vp 
                             JOIN Vente v ON v.id = vp.venteId 
-                            WHERE vp.produitId = p.id AND v.utilisateurId = :userId AND vp.achetee = 1
+                            WHERE vp.produitId = p.id AND v.utilisateurId = :userId AND vp.achetee = TRUE
                         ) THEN 1 ELSE 0
                     END AS achetee,
                     COALESCE(r.likes, 0) AS likes,
@@ -201,7 +190,7 @@ if ($method === 'GET') {
             exit;
         }
 
-        // Si un ID est fourni, récupérer une formation spécifique
+        // 📍 Si un ID est fourni, récupérer une formation spécifique
         if (isset($_GET['id'])) {
             $id = intval($_GET['id']);
             $sql = "
@@ -232,7 +221,7 @@ if ($method === 'GET') {
                         WHEN EXISTS (
                             SELECT 1 FROM VenteProduit vp 
                             JOIN Vente v ON v.id = vp.venteId 
-                            WHERE vp.produitId = p.id AND v.utilisateurId = :userId AND vp.achetee = 1
+                            WHERE vp.produitId = p.id AND v.utilisateurId = :userId AND vp.achetee = TRUE
                         ) THEN 1 ELSE 0
                     END AS achetee,
                     COALESCE(r.likes, 0) AS likes,
@@ -274,7 +263,7 @@ if ($method === 'GET') {
             exit;
         }
         
-        // Si vendeurId est fourni, récupérer les formations d'un vendeur spécifique
+        // 👤 Si vendeurId est fourni, récupérer les formations d'un vendeur spécifique
         elseif ($vendeurId !== null) {
             $sql = "
                 SELECT p.*, 
@@ -303,7 +292,7 @@ if ($method === 'GET') {
                         WHEN EXISTS (
                             SELECT 1 FROM VenteProduit vp 
                             JOIN Vente v ON v.id = vp.venteId 
-                            WHERE vp.produitId = p.id AND v.utilisateurId = :userId AND vp.achetee = 1
+                            WHERE vp.produitId = p.id AND v.utilisateurId = :userId AND vp.achetee = TRUE
                         ) THEN 1 ELSE 0
                     END AS achetee,
                     COALESCE(r.likes, 0) AS likes,
@@ -342,7 +331,7 @@ if ($method === 'GET') {
             echo json_encode($formations);
             exit;
         } else {
-            // Récupérer toutes les formations
+            // 📋 Récupérer toutes les formations
             $sql = "
                 SELECT p.*, 
                     u.nom as vendeur_nom, 
@@ -371,7 +360,7 @@ if ($method === 'GET') {
                         WHEN EXISTS (
                             SELECT 1 FROM VenteProduit vp 
                             JOIN Vente v ON v.id = vp.venteId 
-                            WHERE vp.produitId = p.id AND v.utilisateurId = :userId AND vp.achetee = 1
+                            WHERE vp.produitId = p.id AND v.utilisateurId = :userId AND vp.achetee = TRUE
                         ) THEN 1 ELSE 0
                     END AS achetee,
                     COALESCE(r.likes, 0) AS likes,
@@ -410,19 +399,17 @@ if ($method === 'GET') {
             exit;
         }
     } catch (PDOException $e) {
-        error_log("Erreur GET: " . $e->getMessage());
+        error_log("❌ ERREUR GET FORMATIONS: " . $e->getMessage());
         http_response_code(500);
         echo json_encode(['error' => 'Erreur récupération', 'details' => $e->getMessage()]);
     }
     exit;
 }
 
-// ------------------------
 // ✏️ POST - Créer ou Modifier une formation
-// ------------------------
 if ($method === 'POST') {
     try {
-        // CRÉATION (POST normal)
+        // 🆕 CRÉATION (POST normal)
         if (!isset($_GET['id'])) {
             $titre = $_POST['titre'] ?? '';
             $description = $_POST['description'] ?? '';
@@ -430,8 +417,8 @@ if ($method === 'POST') {
             $categorie = strtolower($_POST['categorie'] ?? 'cuisine');
             $vendeurId = isset($_POST['vendeurId']) ? intval($_POST['vendeurId']) : null;
 
-            // Gestion de la promotion
-            $estEnPromotion = isset($_POST['estEnPromotion']) ? (bool)$_POST['estEnPromotion'] : false;
+            // 🏷️ Gestion de la promotion
+            $estEnPromotion = isset($_POST['estEnPromotion']) ? ($_POST['estEnPromotion'] === '1' || $_POST['estEnPromotion'] === 'true') : false;
             $nomPromotion = $_POST['nomPromotion'] ?? null;
             $prixPromotion = $_POST['prixPromotion'] ?? null;
             $dateDebutPromo = $_POST['dateDebutPromo'] ?? null;
@@ -516,7 +503,7 @@ if ($method === 'POST') {
                 $expiration = null;
             }
 
-            // Gérer l'upload d'image
+            // 🖼️ Gérer l'upload d'image
             $imageUrl = null;
             if (isset($_FILES['image']) && $_FILES['image']['error'] === UPLOAD_ERR_OK) {
                 $tmp = $_FILES['image']['tmp_name'];
@@ -540,6 +527,9 @@ if ($method === 'POST') {
             ]);
 
             $newId = $pdo->lastInsertId();
+            
+            error_log("✅ Formation créée - ID: $newId, Vendeur: $vendeurId");
+            
             echo json_encode([
                 'success' => true,
                 'message' => 'Formation créée avec succès',
@@ -548,7 +538,7 @@ if ($method === 'POST') {
             exit;
         }
 
-        // MODIFICATION (POST avec id)
+        // 📝 MODIFICATION (POST avec id)
         $id = intval($_GET['id']);
         $input = getJsonInput();
 
@@ -558,8 +548,8 @@ if ($method === 'POST') {
         $categorie = strtolower(trim($input['categorie'] ?? ''));
         $vendeurId = isset($input['vendeurId']) ? intval($input['vendeurId']) : null;
 
-        // Gestion de la promotion
-        $estEnPromotion = isset($input['estEnPromotion']) ? (bool)$input['estEnPromotion'] : false;
+        // 🏷️ Gestion de la promotion
+        $estEnPromotion = isset($input['estEnPromotion']) ? ($input['estEnPromotion'] === '1' || $input['estEnPromotion'] === 'true') : false;
         $nomPromotion = $input['nomPromotion'] ?? null;
         $prixPromotion = $input['prixPromotion'] ?? null;
         $dateDebutPromo = $input['dateDebutPromo'] ?? null;
@@ -642,13 +632,13 @@ if ($method === 'POST') {
             $expiration = null;
         }
 
-        // Vérifier que l'utilisateur est propriétaire de la formation
+        // 🔐 Vérifier que l'utilisateur est propriétaire de la formation
         if ($vendeurId) {
             $stmt = $pdo->prepare("SELECT vendeurId FROM Produit WHERE id = ?");
             $stmt->execute([$id]);
             $currentVendeurId = $stmt->fetchColumn();
 
-            if ($currentVendeurId !== $vendeurId) {
+            if ($currentVendeurId != $vendeurId) {
                 http_response_code(403);
                 echo json_encode(['error' => 'Vous n\'êtes pas autorisé à modifier cette formation']);
                 exit;
@@ -674,22 +664,22 @@ if ($method === 'POST') {
         $stmt = $pdo->prepare($sql);
         $stmt->execute($params);
 
+        error_log("✅ Formation modifiée - ID: $id");
+
         echo json_encode([
             'success' => true,
             'message' => 'Formation modifiée avec succès'
         ]);
 
     } catch (PDOException $e) {
-        error_log("Erreur POST: " . $e->getMessage());
+        error_log("❌ ERREUR POST FORMATION: " . $e->getMessage());
         http_response_code(500);
         echo json_encode(['error' => 'Erreur lors de l\'opération', 'details' => $e->getMessage()]);
     }
     exit;
 }
 
-// ------------------------
 // ✏️ PUT - Modifier une formation (méthode alternative)
-// ------------------------
 if ($method === 'PUT') {
     if (!isset($_GET['id'])) {
         http_response_code(400);
@@ -724,7 +714,7 @@ if ($method === 'PUT') {
             $stmt->execute([$id]);
             $currentVendeurId = $stmt->fetchColumn();
 
-            if ($currentVendeurId !== $vendeurId) {
+            if ($currentVendeurId != $vendeurId) {
                 http_response_code(403);
                 echo json_encode(['error' => 'Vous n\'êtes pas autorisé à modifier cette formation']);
                 exit;
@@ -750,16 +740,14 @@ if ($method === 'PUT') {
             ]);
         }
     } catch (PDOException $e) {
-        error_log("Erreur PUT: " . $e->getMessage());
+        error_log("❌ ERREUR PUT FORMATION: " . $e->getMessage());
         http_response_code(500);
         echo json_encode(['error' => 'Erreur modification', 'details' => $e->getMessage()]);
     }
     exit;
 }
 
-// ------------------------
 // 🗑️ DELETE - Supprimer une formation
-// ------------------------
 if ($method === 'DELETE') {
     if (!isset($_GET['id'])) {
         http_response_code(400);
@@ -771,13 +759,13 @@ if ($method === 'DELETE') {
     $vendeurId = isset($_GET['vendeurId']) ? intval($_GET['vendeurId']) : null;
 
     try {
-        // Vérifier que l'utilisateur est propriétaire de la formation
+        // 🔐 Vérifier que l'utilisateur est propriétaire de la formation
         if ($vendeurId) {
             $stmt = $pdo->prepare("SELECT vendeurId FROM Produit WHERE id = ?");
             $stmt->execute([$id]);
             $currentVendeurId = $stmt->fetchColumn();
 
-            if ($currentVendeurId !== $vendeurId) {
+            if ($currentVendeurId != $vendeurId) {
                 http_response_code(403);
                 echo json_encode(['error' => 'Vous n\'êtes pas autorisé à supprimer cette formation']);
                 exit;
@@ -800,8 +788,12 @@ if ($method === 'DELETE') {
             unlink(__DIR__ . '/' . $imageUrl);
         }
 
-        // Vérifier si les colonnes preview existent dans la table video
-        $checkColumns = $pdo->query("DESCRIBE video");
+        // 🔍 Vérifier si les colonnes preview existent dans la table video
+        $checkColumns = $pdo->query("
+            SELECT column_name 
+            FROM information_schema.columns 
+            WHERE table_name = 'video' AND table_schema = 'public'
+        ");
         $columns = $checkColumns->fetchAll(PDO::FETCH_COLUMN);
         $hasPreviewUrl = in_array('preview_url', $columns);
 
@@ -843,6 +835,8 @@ if ($method === 'DELETE') {
         $stmt->execute([$id]);
 
         if ($stmt->rowCount() > 0) {
+            error_log("✅ Formation supprimée - ID: $id");
+            
             echo json_encode([
                 'success' => true,
                 'message' => 'Formation supprimée avec succès (y compris ses vidéos)'
@@ -852,14 +846,15 @@ if ($method === 'DELETE') {
             echo json_encode(['error' => 'Erreur lors de la suppression']);
         }
     } catch (PDOException $e) {
-        error_log("Erreur DELETE: " . $e->getMessage());
+        error_log("❌ ERREUR DELETE FORMATION: " . $e->getMessage());
         http_response_code(500);
         echo json_encode(['error' => 'Erreur suppression', 'details' => $e->getMessage()]);
     }
     exit;
 }
 
-// Méthode non autorisée
+// ❌ Méthode non autorisée
 http_response_code(405);
 echo json_encode(['error' => 'Méthode non autorisée']);
 exit;
+?>

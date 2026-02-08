@@ -1,4 +1,7 @@
 <?php
+// Inclure la configuration de connexion à la base de données
+require_once  'config.php';
+
 // Headers pour CORS
 header("Access-Control-Allow-Origin: *");
 header("Access-Control-Allow-Methods: GET, POST, PUT, DELETE, OPTIONS");
@@ -16,24 +19,6 @@ error_log("========================================");
 if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
     http_response_code(200);
     exit();
-}
-
-// Connexion à la base de données
-$host = 'localhost';
-$dbname = 'gestvente';
-$user = 'root';
-$password = '';
-
-try {
-    $pdo = new PDO("mysql:host=$host;dbname=$dbname;charset=utf8mb4", $user, $password);
-    $pdo->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
-    $pdo->setAttribute(PDO::ATTR_DEFAULT_FETCH_MODE, PDO::FETCH_ASSOC);
-    error_log("✅ Connexion BD réussie");
-} catch (PDOException $e) {
-    error_log("❌ Erreur connexion BD: " . $e->getMessage());
-    http_response_code(500);
-    echo json_encode(['error' => 'Erreur de connexion à la base de données', 'details' => $e->getMessage()]);
-    exit;
 }
 
 // ✅ FONCTION : Nettoyer les fichiers d'une vidéo (vidéo + segments)

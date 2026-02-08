@@ -11,10 +11,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
 }
 
 try {
-    $conn = new PDO("mysql:host=localhost;dbname=gestvente;charset=utf8", "root", "");
-    $conn->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
+   require_once __DIR__ . '/config.php';
 
-    $input = file_get_contents('php://input');
+$input = file_get_contents('php://input');
+
     $data = json_decode($input, true);
 
     error_log("=== ANNULATION TRANSACTION ===");
@@ -141,11 +141,16 @@ try {
     }
 
     // Vérifier la structure exacte de la table Remboursement
-    $stmtCheckTable = $conn->prepare("DESCRIBE Remboursement");
-    $stmtCheckTable->execute();
-    $columns = $stmtCheckTable->fetchAll(PDO::FETCH_ASSOC);
-    
-    $columnNames = array_column($columns, 'Field');
+    $stmtCheckTable = $conn->prepare("
+    SELECT column_name 
+    FROM information_schema.columns 
+    WHERE table_name = 'remboursement'
+");
+$stmtCheckTable->execute();
+
+$columns = $stmtCheckTable->fetchAll(PDO::FETCH_ASSOC);
+$columnNames = array_column($columns, 'column_name');
+
     error_log("Colonnes de la table Remboursement: " . implode(', ', $columnNames));
 
     // Créer une entrée dans la table Remboursement - ADAPTÉ À VOTRE STRUCTURE

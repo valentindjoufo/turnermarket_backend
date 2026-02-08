@@ -9,6 +9,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
     exit();
 }
 
+// Inclure le fichier de configuration pour la connexion à la base de données
+require 'config.php'; // Connexion PDO $pdo disponible
+
 try {
     // Validation des paramètres
     $formationId = isset($_GET['formationId']) ? intval($_GET['formationId']) : 0;
@@ -16,10 +19,6 @@ try {
     if ($formationId <= 0) {
         throw new Exception('ID formation invalide');
     }
-
-    // Connexion à la base de données
-    $pdo = new PDO("mysql:host=localhost;dbname=gestvente;charset=utf8mb4", "root", "");
-    $pdo->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
 
     // Compter les vidéos gratuites (celles avec preview_url non nul)
     $stmt = $pdo->prepare("SELECT COUNT(*) as free_count FROM Video WHERE produitId = ? AND preview_url IS NOT NULL AND preview_url != ''");
@@ -37,6 +36,7 @@ try {
     
 } catch (Exception $e) {
     http_response_code(500);
+    error_log("❌ ERREUR api_free_videos_count : " . $e->getMessage());
     echo json_encode([
         'success' => false,
         'error' => $e->getMessage(),

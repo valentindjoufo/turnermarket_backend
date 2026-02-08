@@ -1,4 +1,7 @@
 <?php
+// Inclure la configuration de connexion à la base de données
+require_once 'config.php';
+
 header("Access-Control-Allow-Origin: *");
 header("Access-Control-Allow-Methods: POST, OPTIONS");
 header("Access-Control-Allow-Headers: Content-Type");
@@ -10,9 +13,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
 }
 
 try {
-    $conn = new PDO("mysql:host=localhost;dbname=gestvente;charset=utf8", "root", "");
-    $conn->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
-
+    // La variable $pdo est déjà définie dans config.php
+    // Utiliser directement $pdo au lieu de créer une nouvelle connexion
+    
     $input = file_get_contents('php://input');
     $data = json_decode($input, true);
 
@@ -23,7 +26,7 @@ try {
         throw new Exception("Notification ID requis");
     }
 
-    $stmt = $conn->prepare("UPDATE Notification SET estLu = ? WHERE id = ?");
+    $stmt = $pdo->prepare("UPDATE Notification SET estLu = ? WHERE id = ?");
     $stmt->execute([$estLu, $notificationId]);
 
     echo json_encode(["success" => true, "message" => "Notification mise à jour"]);
