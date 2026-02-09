@@ -24,8 +24,8 @@ function logDebug($message) {
     file_put_contents($logFile, "[$timestamp] $message\n", FILE_APPEND);
 }
 
-// Fonction : Découpage vidéo avec FFmpeg - CORRECTION DE L'ORDRE DES PARAMÈTRES
-function couperVideo($videoPath, $outputDir, $ffmpegPath, $segmentTime = 900) {  // $segmentTime en dernier
+// Fonction : Découpage vidéo avec FFmpeg
+function couperVideo($videoPath, $outputDir, $ffmpegPath, $segmentTime = 900) {
     if (!is_dir($outputDir)) {
         if (!mkdir($outputDir, 0755, true)) {
             throw new Exception("Impossible de créer le dossier: $outputDir");
@@ -65,7 +65,7 @@ function couperVideo($videoPath, $outputDir, $ffmpegPath, $segmentTime = 900) { 
     return $segments;
 }
 
-// Fonction : Gestion découpage vidéos - CORRECTION DES APPELS À couperVideo
+// Fonction : Gestion découpage vidéos
 function gererDecoupageVideos($videoPath, $previewPath, $videoFilename, $previewFilename, $ffmpegPath, $segmentsBaseDir, $isFree = false) {
     $result = [
         'videoSegments' => [],
@@ -85,7 +85,6 @@ function gererDecoupageVideos($videoPath, $previewPath, $videoFilename, $preview
         logDebug("FFmpeg trouvé, découpage vidéo principale...");
         
         try {
-            // CORRECTION : Appel correct avec les paramètres dans le bon ordre
             $videoSegments = couperVideo($videoPath, $segmentsDir, $ffmpegPath, 900);
             $result['videoSegments'] = $videoSegments;
             $result['videoUrl'] = 'video/segments/' . pathinfo($videoFilename, PATHINFO_FILENAME) . '/' . basename($videoSegments[0]);
@@ -115,7 +114,6 @@ function gererDecoupageVideos($videoPath, $previewPath, $videoFilename, $preview
             logDebug("Découpage vidéo d'aperçu...");
             
             try {
-                // CORRECTION : Appel correct avec les paramètres dans le bon ordre
                 $previewSegments = couperVideo($previewPath, $previewSegmentsDir, $ffmpegPath, 900);
                 $result['previewSegments'] = $previewSegments;
                 $result['previewUrl'] = 'video/segments/preview_' . pathinfo($previewFilename, PATHINFO_FILENAME) . '/' . basename($previewSegments[0]);
@@ -147,20 +145,36 @@ try {
     
     logDebug("=== DÉBUT UPLOAD VIDÉO ===");
     logDebug("Méthode: " . $_SERVER['REQUEST_METHOD']);
+    logDebug("Content-Type: " . ($_SERVER['CONTENT_TYPE'] ?? 'Non défini'));
     
-    // 1. Validation données POST
+    // LOGS DÉTAILLÉS POUR DÉBOGUER LES DONNÉES REÇUES
+    logDebug("Données POST reçues: " . print_r($_POST, true));
+    logDebug("Fichiers reçus: " . print_r($_FILES, true));
+
+    // 1. Validation données POST avec débogage détaillé
     $titre = isset($_POST['titre']) ? trim($_POST['titre']) : '';
+    
+    // Log détaillé pour le titre
+    logDebug("Titre brut reçu: '" . ($_POST['titre'] ?? 'NON DÉFINI') . "'");
+    logDebug("Titre après trim: '$titre'");
+    logDebug("Titre vide? " . (empty($titre) ? 'OUI' : 'NON'));
+    
+    // Vérifier si le titre est vide ou null
+    if ($titre === null || $titre === '' || empty($titre)) {
+        logDebug("ERREUR: Titre est null, chaîne vide ou contient uniquement des espaces");
+        logDebug("Clés POST disponibles: " . implode(', ', array_keys($_POST)));
+        
+        throw new Exception('Le titre est obligatoire');
+    }
+    
     $produitId = isset($_POST['produitId']) ? intval($_POST['produitId']) : 0;
     $ordre = isset($_POST['ordre']) ? intval($_POST['ordre']) : 1;
     $description = isset($_POST['description']) ? trim($_POST['description']) : '';
     $userId = isset($_POST['userId']) ? intval($_POST['userId']) : 0;
     $is_free = isset($_POST['is_free']) ? intval($_POST['is_free']) : 0;
     
-    logDebug("Données - Titre: $titre, ProduitID: $produitId, Ordre: $ordre, UserID: $userId, is_free: $is_free");
-    
-    if (empty($titre)) {
-        throw new Exception('Le titre est obligatoire');
-    }
+    logDebug("Données - Titre: '$titre', ProduitID: $produitId, Ordre: $ordre, UserID: $userId, is_free: $is_free");
+    logDebug("Description: '$description'");
     
     if ($produitId <= 0) {
         throw new Exception('ID formation invalide');
@@ -171,7 +185,6 @@ try {
     }
 
     // ✅ Connexion PostgreSQL déjà établie via config.php
-    // VÉRIFIER QUE $pdo EST DÉFINI
     if (!isset($pdo) && isset($conn)) {
         $pdo = $conn; // Utiliser $conn si $pdo n'est pas défini
     }
@@ -209,11 +222,21 @@ try {
     }
 
     // 5. Vérification fichiers uploadés
-    logDebug("Fichiers reçus: " . print_r(array_keys($_FILES), true));
-    
     if (!isset($_FILES['video']) || $_FILES['video']['error'] !== UPLOAD_ERR_OK) {
-        throw new Exception('Vidéo principale manquante (erreur: ' . 
-            (isset($_FILES['video']) ? $_FILES['video']['error'] : 'non défini') . ')');
+        $errorCode = isset($_FILES['video']) ? $_FILES['video']['error'] : 'fichier non présent';
+        $errorMessages = [
+            0 => 'Aucune erreur',
+            1 => 'Fichier trop volumineux (upload_max_filesize)',
+            2 => 'Fichier trop volumineux (MAX_FILE_SIZE)',
+            3 => 'Fichier partiellement uploadé',
+            4 => 'Aucun fichier uploadé',
+            6 => 'Dossier temporaire manquant',
+            7 => 'Échec écriture disque',
+            8 => 'Extension PHP arrêtée'
+        ];
+        
+        $errorMessage = $errorMessages[$errorCode] ?? "Erreur inconnue ($errorCode)";
+        throw new Exception("Vidéo principale manquante: $errorMessage");
     }
 
     $hasPreviewVideo = isset($_FILES['preview_video']) && $_FILES['preview_video']['error'] === UPLOAD_ERR_OK;
@@ -242,9 +265,11 @@ try {
     
     if (!in_array($videoFile['type'], $allowedMimes)) {
         logDebug("Type MIME vidéo non accepté: " . $videoFile['type']);
+        // Ne pas bloquer, juste logger
     }
     if ($hasPreviewVideo && !in_array($previewFile['type'], $allowedMimes)) {
         logDebug("Type MIME preview non accepté: " . $previewFile['type']);
+        // Ne pas bloquer, juste logger
     }
 
     // 8. Création dossiers
@@ -325,19 +350,22 @@ try {
         throw new Exception('Vidéo d\'aperçu non enregistrée');
     }
 
-    // ✅ Chemin FFmpeg - ADAPTEZ À VOTRE SYSTÈME
-    // $ffmpegPath = "C:\\ffmpeg\\bin\\ffmpeg.exe"; // Windows
-    $ffmpegPath = "/usr/bin/ffmpeg"; // Linux
-    // $ffmpegPath = "/opt/homebrew/bin/ffmpeg"; // Mac avec Homebrew
+    // ✅ Chemin FFmpeg - Détection automatique
+    $ffmpegPath = "/usr/bin/ffmpeg"; // Chemin par défaut pour Linux
     
+    // Vérifier si FFmpeg existe
     if (!file_exists($ffmpegPath)) {
         logDebug("ATTENTION: FFmpeg non trouvé à: $ffmpegPath");
         // Essayer de trouver FFmpeg via which
-        exec("which ffmpeg", $output, $return_var);
+        exec("which ffmpeg 2>/dev/null", $output, $return_var);
         if ($return_var === 0 && !empty($output[0])) {
             $ffmpegPath = trim($output[0]);
             logDebug("FFmpeg trouvé via which: $ffmpegPath");
+        } else {
+            logDebug("FFmpeg non disponible sur le système");
         }
+    } else {
+        logDebug("FFmpeg trouvé à: $ffmpegPath");
     }
     
     // ✅ Gestion découpage
@@ -465,7 +493,7 @@ try {
         echo json_encode($response);
         
     } catch (Exception $dbError) {
-        if ($pdo->inTransaction()) {
+        if (isset($pdo) && $pdo->inTransaction()) {
             $pdo->rollBack();
         }
         

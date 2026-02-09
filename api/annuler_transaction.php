@@ -1,7 +1,7 @@
 <?php
 // annuler_transaction.php - Gère l'annulation et le remboursement AVEC NOTIFICATIONS
 header("Access-Control-Allow-Origin: *");
-header("Access-Control-Allow-Methods: POST, OPTIONS");
+header("Access-Control-Allow-Methods: POST, GET, OPTIONS");
 header("Access-Control-Allow-Headers: Content-Type");
 header("Content-Type: application/json; charset=UTF-8");
 
@@ -11,57 +11,151 @@ if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
 }
 
 try {
-   require_once  'config.php';
-
-$input = file_get_contents('php://input');
-
-    $data = json_decode($input, true);
+    require_once 'config.php';
 
     error_log("=== ANNULATION TRANSACTION ===");
-    error_log("Données reçues: " . $input);
+    error_log("Méthode: " . $_SERVER['REQUEST_METHOD']);
 
-    // Récupération des données
-    $transactionId = $data['transactionId'] ?? null;
-    $motif = $data['motif'] ?? 'Non spécifié';
-    $userId = $data['userId'] ?? null;
-    $formationId = $data['formationId'] ?? null;
+    // Vérifier la méthode de la requête et récupérer les données
+    if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+        $input = file_get_contents('php://input');
+        error_log("Données brutes reçues: " . $input);
+        
+        if (!empty($input)) {
+            $data = json_decode($input, true);
+            // Si JSON invalide, utiliser $_POST
+            if (json_last_error() !== JSON_ERROR_NONE) {
+                error_log("JSON invalide, utilisation de $_POST");
+                $data = $_POST;
+            }
+        } else {
+            $data = $_POST;
+        }
+    } elseif ($_SERVER['REQUEST_METHOD'] === 'GET') {
+        $data = $_GET;
+        error_log("Données GET reçues: " . print_r($data, true));
+    } else {
+        throw new Exception("Méthode non autorisée");
+    }
+
+    // Récupérer transactionId depuis différentes sources possibles
+    $transactionId = null;
+    
+    // Essayer différentes clés possibles
+    $possibleKeys = ['transactionId', 'transaction_id', 'id_transaction', 'id', 'payment_id'];
+    
+    foreach ($possibleKeys as $key) {
+        if (isset($data[$key]) && !empty($data[$key])) {
+            $transactionId = $data[$key];
+            error_log("TransactionId trouvé avec clé '$key': " . $transactionId);
+            break;
+        }
+    }
+    
+    // Si toujours null, vérifier dans $_GET directement
+    if (!$transactionId && isset($_GET['transactionId'])) {
+        $transactionId = $_GET['transactionId'];
+        error_log("TransactionId trouvé dans \$_GET: " . $transactionId);
+    }
+    
+    // Récupération des autres données
+    $motif = $data['motif'] ?? ($data['raison'] ?? 'Non spécifié');
+    $userId = $data['userId'] ?? ($data['user_id'] ?? $data['utilisateurId'] ?? null);
+    $formationId = $data['formationId'] ?? ($data['formation_id'] ?? $data['produitId'] ?? null);
     $montant = $data['montant'] ?? null;
 
     // Validation
     if (!$transactionId) {
-        throw new Exception("Transaction ID manquant");
+        error_log("ERREUR: Aucun ID de transaction trouvé");
+        error_log("Données disponibles: " . print_r($data, true));
+        error_log("Keys disponibles: " . implode(', ', array_keys($data)));
+        
+        http_response_code(400);
+        echo json_encode([
+            "success" => false,
+            "error" => "ID de transaction manquant",
+            "message" => "ID de transaction manquant",
+            "details" => "Les clés recherchées étaient: " . implode(', ', $possibleKeys),
+            "data_received" => $data
+        ]);
+        exit();
     }
 
-    error_log("Transaction ID: " . $transactionId);
+    // Nettoyer le transactionId
+    $transactionId = trim($transactionId);
+    error_log("Transaction ID final: " . $transactionId);
     error_log("User ID: " . $userId);
     error_log("Formation ID: " . $formationId);
     error_log("Motif: " . $motif);
+    error_log("Montant: " . $montant);
 
     // Vérifier que la transaction existe
     $stmt = $conn->prepare("
         SELECT v.*, u.nom as nomClient, u.email as emailClient 
         FROM Vente v 
         JOIN Utilisateur u ON v.utilisateurId = u.id 
-        WHERE v.transactionId = ?
+        WHERE v.transactionId = ? OR v.reference = ?
     ");
-    $stmt->execute([$transactionId]);
+    $stmt->execute([$transactionId, $transactionId]);
     $vente = $stmt->fetch(PDO::FETCH_ASSOC);
 
     if (!$vente) {
         error_log("ERREUR: Transaction non trouvée - " . $transactionId);
-        throw new Exception("Transaction non trouvée: " . $transactionId);
+        
+        // Essayer de rechercher par ID numérique si $transactionId est numérique
+        if (is_numeric($transactionId)) {
+            $stmt = $conn->prepare("
+                SELECT v.*, u.nom as nomClient, u.email as emailClient 
+                FROM Vente v 
+                JOIN Utilisateur u ON v.utilisateurId = u.id 
+                WHERE v.id = ?
+            ");
+            $stmt->execute([$transactionId]);
+            $vente = $stmt->fetch(PDO::FETCH_ASSOC);
+            
+            if ($vente) {
+                error_log("Transaction trouvée par ID numérique: " . $transactionId);
+            }
+        }
+        
+        if (!$vente) {
+            http_response_code(404);
+            echo json_encode([
+                "success" => false,
+                "error" => "Transaction non trouvée",
+                "message" => "Transaction non trouvée: " . $transactionId
+            ]);
+            exit();
+        }
     }
 
-    error_log("Vente trouvée - ID: " . $vente['id'] . ", Statut actuel: " . $vente['statut']);
+    error_log("Vente trouvée - ID: " . $vente['id'] . ", Statut actuel: " . $vente['statut'] . ", TransactionId: " . $vente['transactionId']);
 
     // Vérifier que la transaction n'a pas déjà été annulée
     if ($vente['statut'] === 'annule' || $vente['statut'] === 'rembourse') {
-        throw new Exception("Cette transaction a déjà été annulée");
+        error_log("Transaction déjà annulée - Statut: " . $vente['statut']);
+        
+        echo json_encode([
+            "success" => false,
+            "error" => "Transaction déjà annulée",
+            "message" => "Cette transaction a déjà été annulée",
+            "statut_actuel" => $vente['statut']
+        ]);
+        exit();
     }
 
-    // Vérifier que c'est bien l'acheteur qui demande le remboursement
+    // Vérifier que c'est bien l'acheteur qui demande le remboursement (si userId fourni)
     if ($userId && $vente['utilisateurId'] != $userId) {
-        throw new Exception("Vous n'êtes pas autorisé à annuler cette transaction");
+        error_log("ERREUR: Tentative d'annulation non autorisée");
+        error_log("UserId fourni: " . $userId . ", UserId propriétaire: " . $vente['utilisateurId']);
+        
+        http_response_code(403);
+        echo json_encode([
+            "success" => false,
+            "error" => "Non autorisé",
+            "message" => "Vous n'êtes pas autorisé à annuler cette transaction"
+        ]);
+        exit();
     }
 
     // Récupérer le produitId et vendeurId associés à cette vente
@@ -76,6 +170,7 @@ $input = file_get_contents('php://input');
     $produitInfo = $stmtProduit->fetch(PDO::FETCH_ASSOC);
     
     if (!$produitInfo) {
+        error_log("ERREUR: Aucun produit trouvé pour cette transaction");
         throw new Exception("Aucun produit trouvé pour cette transaction");
     }
     
@@ -95,9 +190,9 @@ $input = file_get_contents('php://input');
         SET statut = 'annule', 
             motifAnnulation = ?, 
             dateAnnulation = NOW() 
-        WHERE transactionId = ?
+        WHERE id = ?
     ");
-    $stmt->execute([$motif, $transactionId]);
+    $stmt->execute([$motif, $vente['id']]);
     error_log("Vente mise à jour avec statut 'annule'");
 
     // Marquer les produits comme non achetés
@@ -125,37 +220,40 @@ $input = file_get_contents('php://input');
     $commissions = $stmtCommission->fetchAll(PDO::FETCH_ASSOC);
 
     // Débiter les vendeurs qui avaient été crédités
-    $stmtUpdateSolde = $conn->prepare("
-        UPDATE Utilisateur 
-        SET soldeVendeur = GREATEST(0, soldeVendeur - ?), 
-            nbVentes = GREATEST(0, nbVentes - 1) 
-        WHERE id = ?
-    ");
-    
-    foreach ($commissions as $commission) {
-        $stmtUpdateSolde->execute([
-            $commission['montantVendeur'], 
-            $commission['vendeurId']
-        ]);
-        error_log("Vendeur débité - ID: " . $commission['vendeurId'] . ", Montant: " . $commission['montantVendeur']);
+    if (!empty($commissions)) {
+        $stmtUpdateSolde = $conn->prepare("
+            UPDATE Utilisateur 
+            SET soldeVendeur = GREATEST(0, soldeVendeur - ?), 
+                nbVentes = GREATEST(0, nbVentes - 1) 
+            WHERE id = ?
+        ");
+        
+        foreach ($commissions as $commission) {
+            $stmtUpdateSolde->execute([
+                $commission['montantVendeur'], 
+                $commission['vendeurId']
+            ]);
+            error_log("Vendeur débité - ID: " . $commission['vendeurId'] . ", Montant: " . $commission['montantVendeur']);
+        }
     }
 
     // Vérifier la structure exacte de la table Remboursement
     $stmtCheckTable = $conn->prepare("
-    SELECT column_name 
-    FROM information_schema.columns 
-    WHERE table_name = 'remboursement'
-");
-$stmtCheckTable->execute();
+        SELECT column_name 
+        FROM information_schema.columns 
+        WHERE table_name = 'remboursement'
+    ");
+    $stmtCheckTable->execute();
 
-$columns = $stmtCheckTable->fetchAll(PDO::FETCH_ASSOC);
-$columnNames = array_column($columns, 'column_name');
+    $columns = $stmtCheckTable->fetchAll(PDO::FETCH_ASSOC);
+    $columnNames = array_column($columns, 'column_name');
 
     error_log("Colonnes de la table Remboursement: " . implode(', ', $columnNames));
 
-    // Créer une entrée dans la table Remboursement - ADAPTÉ À VOTRE STRUCTURE
+    // Créer une entrée dans la table Remboursement
+    $remboursementId = null;
     if (in_array('produitId', $columnNames) && in_array('acheteurId', $columnNames) && in_array('vendeurId', $columnNames)) {
-        // Votre structure actuelle avec tous les champs
+        // Structure complète
         $stmt = $conn->prepare("
             INSERT INTO Remboursement 
             (venteId, produitId, acheteurId, vendeurId, montant, motif, pourcentageVisionne, statut, dateCreation) 
@@ -164,14 +262,14 @@ $columnNames = array_column($columns, 'column_name');
         $stmt->execute([
             $vente['id'], 
             $produitId,
-            $vente['utilisateurId'], // acheteurId
-            $vendeurId, // vendeurId
+            $vente['utilisateurId'],
+            $vendeurId,
             $vente['total'], 
             $motif
         ]);
         error_log("Remboursement créé avec structure complète");
     } else {
-        // Structure alternative si certains champs manquent
+        // Structure alternative
         $stmt = $conn->prepare("
             INSERT INTO Remboursement 
             (venteId, montant, motif, statut, dateCreation) 
@@ -185,7 +283,7 @@ $columnNames = array_column($columns, 'column_name');
     error_log("Remboursement créé - ID: " . $remboursementId);
 
     // ============================================
-    // 🔔 SYSTÈME DE NOTIFICATIONS - NOUVEAU
+    // 🔔 SYSTÈME DE NOTIFICATIONS
     // ============================================
     error_log("=== ENVOI DES NOTIFICATIONS ===");
     
@@ -244,29 +342,13 @@ $columnNames = array_column($columns, 'column_name');
 
     error_log("✅ Transaction annulée avec succès: " . $transactionId);
 
-    // Récupérer les informations complètes pour l'email
-    $stmt = $conn->prepare("
-        SELECT r.*, v.transactionId, u.nom as nomUtilisateur, u.email as emailUtilisateur
-        FROM Remboursement r
-        JOIN Vente v ON r.venteId = v.id
-        JOIN Utilisateur u ON v.utilisateurId = u.id
-        WHERE r.id = ?
-    ");
-    $stmt->execute([$remboursementId]);
-    $remboursementInfo = $stmt->fetch(PDO::FETCH_ASSOC);
-
-    // Envoyer un email à l'admin (si la fonction existe)
-    if (function_exists('envoyerEmailAdminNouveauRemboursement')) {
-        envoyerEmailAdminNouveauRemboursement($remboursementInfo);
-        error_log("Email envoyé à l'admin");
-    }
-
     echo json_encode([
         "success" => true,
         "message" => "Transaction annulée avec succès. Le remboursement sera traité sous 48h.",
         "transaction_id" => $transactionId,
         "remboursement_id" => $remboursementId,
         "motif" => $motif,
+        "montant" => $vente['total'],
         "notifications_envoyees" => [
             "client" => true,
             "vendeur" => true,
@@ -290,13 +372,5 @@ $columnNames = array_column($columns, 'column_name');
         "error" => $e->getMessage(),
         "message" => $e->getMessage()
     ]);
-}
-
-/**
- * Fonction pour envoyer un email à l'admin (optionnelle)
- */
-function envoyerEmailAdminNouveauRemboursement($remboursementInfo) {
-    // Implémentez l'envoi d'email ici si nécessaire
-    error_log("📧 Email admin - Remboursement #" . $remboursementInfo['id'] . " pour " . $remboursementInfo['montant'] . " FCFA");
 }
 ?>
