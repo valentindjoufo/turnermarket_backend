@@ -47,3 +47,5 @@ try {
     ]);
     exit;
 }
+
+$pdo = $conn;

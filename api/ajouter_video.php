@@ -24,8 +24,8 @@ function logDebug($message) {
     file_put_contents($logFile, "[$timestamp] $message\n", FILE_APPEND);
 }
 
-// Fonction : Découpage vidéo avec FFmpeg
-function couperVideo($videoPath, $outputDir, $segmentTime = 900, $ffmpegPath) {
+// Fonction : Découpage vidéo avec FFmpeg - CORRECTION DE L'ORDRE DES PARAMÈTRES
+function couperVideo($videoPath, $outputDir, $ffmpegPath, $segmentTime = 900) {  // $segmentTime en dernier
     if (!is_dir($outputDir)) {
         if (!mkdir($outputDir, 0755, true)) {
             throw new Exception("Impossible de créer le dossier: $outputDir");
@@ -65,7 +65,7 @@ function couperVideo($videoPath, $outputDir, $segmentTime = 900, $ffmpegPath) {
     return $segments;
 }
 
-// Fonction : Gestion découpage vidéos
+// Fonction : Gestion découpage vidéos - CORRECTION DES APPELS À couperVideo
 function gererDecoupageVideos($videoPath, $previewPath, $videoFilename, $previewFilename, $ffmpegPath, $segmentsBaseDir, $isFree = false) {
     $result = [
         'videoSegments' => [],
@@ -85,7 +85,8 @@ function gererDecoupageVideos($videoPath, $previewPath, $videoFilename, $preview
         logDebug("FFmpeg trouvé, découpage vidéo principale...");
         
         try {
-            $videoSegments = couperVideo($videoPath, $segmentsDir, 900, $ffmpegPath);
+            // CORRECTION : Appel correct avec les paramètres dans le bon ordre
+            $videoSegments = couperVideo($videoPath, $segmentsDir, $ffmpegPath, 900);
             $result['videoSegments'] = $videoSegments;
             $result['videoUrl'] = 'video/segments/' . pathinfo($videoFilename, PATHINFO_FILENAME) . '/' . basename($videoSegments[0]);
             logDebug("Vidéo découpée en " . count($videoSegments) . " segments");
@@ -114,7 +115,8 @@ function gererDecoupageVideos($videoPath, $previewPath, $videoFilename, $preview
             logDebug("Découpage vidéo d'aperçu...");
             
             try {
-                $previewSegments = couperVideo($previewPath, $previewSegmentsDir, 900, $ffmpegPath);
+                // CORRECTION : Appel correct avec les paramètres dans le bon ordre
+                $previewSegments = couperVideo($previewPath, $previewSegmentsDir, $ffmpegPath, 900);
                 $result['previewSegments'] = $previewSegments;
                 $result['previewUrl'] = 'video/segments/preview_' . pathinfo($previewFilename, PATHINFO_FILENAME) . '/' . basename($previewSegments[0]);
                 logDebug("Preview découpé en " . count($previewSegments) . " segments");
@@ -139,6 +141,10 @@ function gererDecoupageVideos($videoPath, $previewPath, $videoFilename, $preview
 }
 
 try {
+    // ACTIVER L'AFFICHAGE DES ERREURS POUR DÉBOGUER
+    error_reporting(E_ALL);
+    ini_set('display_errors', 1);
+    
     logDebug("=== DÉBUT UPLOAD VIDÉO ===");
     logDebug("Méthode: " . $_SERVER['REQUEST_METHOD']);
     
@@ -165,8 +171,15 @@ try {
     }
 
     // ✅ Connexion PostgreSQL déjà établie via config.php
-    // $pdo est déjà disponible dans la même portée
+    // VÉRIFIER QUE $pdo EST DÉFINI
+    if (!isset($pdo) && isset($conn)) {
+        $pdo = $conn; // Utiliser $conn si $pdo n'est pas défini
+    }
     
+    if (!isset($pdo) || !($pdo instanceof PDO)) {
+        throw new Exception('Connexion à la base de données non disponible');
+    }
+
     // 3. Vérification formation
     $stmt = $pdo->prepare("SELECT id, vendeurId FROM Produit WHERE id = ?");
     $stmt->execute([$produitId]);
@@ -312,9 +325,20 @@ try {
         throw new Exception('Vidéo d\'aperçu non enregistrée');
     }
 
-    // ✅ Chemin FFmpeg - MODIFIEZ SELON VOTRE INSTALLATION
-    $ffmpegPath = "C:\\ffmpeg\\bin\\ffmpeg.exe"; // Windows
-    // $ffmpegPath = "/usr/bin/ffmpeg"; // Linux/Mac
+    // ✅ Chemin FFmpeg - ADAPTEZ À VOTRE SYSTÈME
+    // $ffmpegPath = "C:\\ffmpeg\\bin\\ffmpeg.exe"; // Windows
+    $ffmpegPath = "/usr/bin/ffmpeg"; // Linux
+    // $ffmpegPath = "/opt/homebrew/bin/ffmpeg"; // Mac avec Homebrew
+    
+    if (!file_exists($ffmpegPath)) {
+        logDebug("ATTENTION: FFmpeg non trouvé à: $ffmpegPath");
+        // Essayer de trouver FFmpeg via which
+        exec("which ffmpeg", $output, $return_var);
+        if ($return_var === 0 && !empty($output[0])) {
+            $ffmpegPath = trim($output[0]);
+            logDebug("FFmpeg trouvé via which: $ffmpegPath");
+        }
+    }
     
     // ✅ Gestion découpage
     logDebug("Début traitement FFmpeg...");
@@ -325,7 +349,7 @@ try {
         $previewFilename,
         $ffmpegPath,
         $segmentsBaseDir,
-        $hasPreviewVideo
+        $is_free
     );
     
     $videoSegments = $decoupageResult['videoSegments'];
@@ -371,16 +395,12 @@ try {
             
             $segmentPreviewUrl = null;
             if ($index === 0 && !empty($previewSegments)) {
-                if (count($previewSegments) > 1) {
-                    $segmentPreviewUrl = $previewUrl;
-                } else {
-                    $segmentPreviewUrl = $previewUrl;
-                }
+                $segmentPreviewUrl = $previewUrl;
             }
             
             if ($hasDescription) {
                 $sql = "INSERT INTO Video (produitId, titre, url, ordre, preview_url, description, dateCreation) 
-                        VALUES (?, ?, ?, ?, ?, ?, NOW())";
+                        VALUES (?, ?, ?, ?, ?, ?, NOW()) RETURNING id";
                 $params = [
                     $produitId,
                     $segmentTitre,
@@ -391,7 +411,7 @@ try {
                 ];
             } else {
                 $sql = "INSERT INTO Video (produitId, titre, url, ordre, preview_url, dateCreation) 
-                        VALUES (?, ?, ?, ?, ?, NOW())";
+                        VALUES (?, ?, ?, ?, ?, NOW()) RETURNING id";
                 $params = [
                     $produitId,
                     $segmentTitre,
@@ -403,51 +423,13 @@ try {
             
             $stmt = $pdo->prepare($sql);
             $stmt->execute($params);
+            $videoId = $stmt->fetchColumn();
             
             if ($index === 0) {
-                $firstVideoId = $pdo->lastInsertId();
+                $firstVideoId = $videoId;
             }
             
-            logDebug("Segment " . ($index + 1) . " inséré - Ordre: $segmentOrdre, URL: $segmentUrl");
-        }
-        
-        // ✅ Insertion segments d'aperçu supplémentaires
-        if (count($previewSegments) > 1) {
-            for ($i = 1; $i < count($previewSegments); $i++) {
-                $previewSegment = $previewSegments[$i];
-                $previewSegmentTitre = $titre . " - Aperçu Partie " . ($i + 1);
-                $previewSegmentUrl = 'video/segments/preview_' . pathinfo($previewFilename, PATHINFO_FILENAME) . '/' . basename($previewSegment);
-                
-                $previewSegmentOrdre = -($i);
-                
-                if ($hasDescription) {
-                    $sql = "INSERT INTO Video (produitId, titre, url, ordre, preview_url, description, dateCreation) 
-                            VALUES (?, ?, ?, ?, ?, ?, NOW())";
-                    $params = [
-                        $produitId,
-                        $previewSegmentTitre,
-                        $previewSegmentUrl,
-                        $previewSegmentOrdre,
-                        $previewSegmentUrl,
-                        $description . " (Aperçu)"
-                    ];
-                } else {
-                    $sql = "INSERT INTO Video (produitId, titre, url, ordre, preview_url, dateCreation) 
-                            VALUES (?, ?, ?, ?, ?, NOW())";
-                    $params = [
-                        $produitId,
-                        $previewSegmentTitre,
-                        $previewSegmentUrl,
-                        $previewSegmentOrdre,
-                        $previewSegmentUrl
-                    ];
-                }
-                
-                $stmt = $pdo->prepare($sql);
-                $stmt->execute($params);
-                
-                logDebug("Segment aperçu " . ($i + 1) . " inséré");
-            }
+            logDebug("Segment " . ($index + 1) . " inséré - ID: $videoId, Ordre: $segmentOrdre, URL: $segmentUrl");
         }
         
         $pdo->commit();
@@ -483,7 +465,9 @@ try {
         echo json_encode($response);
         
     } catch (Exception $dbError) {
-        $pdo->rollBack();
+        if ($pdo->inTransaction()) {
+            $pdo->rollBack();
+        }
         
         // Nettoyage fichiers
         if (file_exists($videoPath)) {
