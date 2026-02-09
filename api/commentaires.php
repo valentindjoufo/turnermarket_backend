@@ -22,8 +22,57 @@ error_reporting(E_ALL);
 ini_set('display_errors', 1);
 
 // La variable $pdo est déjà définie dans config.php
-// Configuration PostgreSQL - ajuster le jeu de caractères si nécessaire
-$pdo->exec("SET NAMES 'UTF8'");
+// Vérifier si la connexion existe
+if (!isset($pdo) || !($pdo instanceof PDO)) {
+    // Si config.php n'a pas créé $pdo, créer la connexion ici
+    $databaseUrl = getenv("DATABASE_URL");
+    if (!$databaseUrl) {
+        http_response_code(500);
+        echo json_encode([
+            'success' => false,
+            'message' => 'DATABASE_URL non définie'
+        ]);
+        exit;
+    }
+
+    $parsed = parse_url($databaseUrl);
+    $host = $parsed['host'] ?? 'localhost';
+    $port = $parsed['port'] ?? 5432;
+    $user = $parsed['user'] ?? 'postgres';
+    $pass = $parsed['pass'] ?? '';
+    $db   = ltrim($parsed['path'] ?? '/defaultdb', '/');
+
+    try {
+        $pdo = new PDO(
+            "pgsql:host=$host;port=$port;dbname=$db",
+            $user,
+            $pass,
+            [
+                PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION,
+                PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
+                PDO::ATTR_TIMEOUT => 10,
+                PDO::ATTR_EMULATE_PREPARES => false,
+            ]
+        );
+        // Configuration PostgreSQL - ajuster le jeu de caractères
+        $pdo->exec("SET NAMES 'UTF8'");
+    } catch (PDOException $e) {
+        http_response_code(503);
+        echo json_encode([
+            'success' => false,
+            'error' => 'Service temporairement indisponible',
+            'message' => 'Impossible de se connecter à la base de données',
+            'debug' => [
+                'error' => $e->getMessage(),
+                'host' => $host,
+                'database' => $db,
+                'user' => $user,
+                'timestamp' => date('Y-m-d H:i:s')
+            ]
+        ]);
+        exit;
+    }
+}
 
 // Configuration des uploads
 define('UPLOAD_DIR', __DIR__ . '/uploads/');
@@ -224,7 +273,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'GET') {
 
     foreach ($commentaires as &$commentaire) {
         $commentaire['id'] = (int)$commentaire['id'];
-        $commentaire['utilisateurId'] = (int)$commentaire['utilisateurnid']; // PostgreSQL retourne en minuscules
+        $commentaire['utilisateurId'] = (int)$commentaire['utilisateurid']; // PostgreSQL retourne en minuscules
         
         // CORRIGÉ: Le statut "vu" est maintenant spécifique à l'utilisateur
         if (isset($commentaire['vu'])) {
@@ -548,7 +597,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'PUT') {
             exit;
         }
 
-        if ($comment['utilisateurnid'] != $utilisateurId) { // minuscules
+        if ($comment['utilisateurid'] != $utilisateurId) { // minuscules
             http_response_code(403);
             echo json_encode(['error' => 'Vous ne pouvez pas modifier ce commentaire']);
             exit;
@@ -590,7 +639,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'DELETE') {
         $stmtCheck->execute([$id]);
         $comment = $stmtCheck->fetch();
 
-        if (!$comment || $comment['utilisateurnid'] != $utilisateurId) { // minuscules
+        if (!$comment || $comment['utilisateurid'] != $utilisateurId) { // minuscules
             http_response_code(403);
             echo json_encode(['error' => 'Permission refusée']);
             exit;
@@ -632,4 +681,3 @@ if ($_SERVER['REQUEST_METHOD'] === 'DELETE') {
 http_response_code(405);
 echo json_encode(['error' => 'Méthode non autorisée']);
 exit;
-?>
