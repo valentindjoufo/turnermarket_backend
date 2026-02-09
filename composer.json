@@ -1,0 +1,11 @@
+{
+    "require": {
+        "aws/aws-sdk-php": "^3.0"
+    },
+    "config": {
+        "platform-check": false,
+        "optimize-autoloader": true
+    },
+    "minimum-stability": "stable",
+    "prefer-stable": true
+}

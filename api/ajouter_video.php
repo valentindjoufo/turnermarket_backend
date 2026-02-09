@@ -1,6 +1,9 @@
 <?php
-// 📁 Inclure la configuration de connexion PostgreSQL (même répertoire)
+// 📁 Inclure les configurations
 require_once 'config.php';
+require_once 'cloudflare-config.php';
+
+use Aws\S3\S3Client;
 
 header("Access-Control-Allow-Origin: *");
 header("Access-Control-Allow-Methods: POST, OPTIONS");
@@ -22,6 +25,31 @@ function logDebug($message) {
     }
     $timestamp = date('Y-m-d H:i:s');
     file_put_contents($logFile, "[$timestamp] $message\n", FILE_APPEND);
+}
+
+// Fonction : Upload vers Cloudflare R2 et retourner l'URL
+function uploadToR2AndGetUrl($filePath, $originalName, $produitId, $type = 'video', $segmentNum = null) {
+    try {
+        // Générer une clé d'objet pour R2
+        $objectKey = generateR2ObjectKey($originalName, $produitId, $type, $segmentNum);
+        
+        logDebug("📤 Upload vers Cloudflare R2: $objectKey");
+        
+        // Upload vers Cloudflare R2
+        $publicUrl = uploadToCloudflareR2($filePath, $objectKey);
+        
+        logDebug("✅ Upload réussi: $publicUrl");
+        
+        // Retourner la clé (pour stockage en BD) et l'URL publique
+        return [
+            'object_key' => $objectKey,
+            'public_url' => $publicUrl
+        ];
+        
+    } catch (Exception $e) {
+        logDebug("❌ Erreur upload R2: " . $e->getMessage());
+        throw new Exception("Erreur lors de l'upload vers Cloudflare R2: " . $e->getMessage());
+    }
 }
 
 // Fonction : Découpage vidéo avec FFmpeg
@@ -65,13 +93,15 @@ function couperVideo($videoPath, $outputDir, $ffmpegPath, $segmentTime = 900) {
     return $segments;
 }
 
-// Fonction : Gestion découpage vidéos
-function gererDecoupageVideos($videoPath, $previewPath, $videoFilename, $previewFilename, $ffmpegPath, $segmentsBaseDir, $isFree = false) {
+// Fonction : Gestion découpage vidéos avec upload vers R2
+function gererDecoupageEtUploadR2($videoPath, $previewPath, $videoFilename, $previewFilename, $ffmpegPath, $segmentsBaseDir, $produitId, $isFree = false) {
     $result = [
         'videoSegments' => [],
         'previewSegments' => [],
-        'videoUrl' => '',
-        'previewUrl' => ''
+        'videoUrls' => [], // URLs Cloudflare R2 pour chaque segment
+        'previewUrls' => [], // URLs Cloudflare R2 pour chaque segment preview
+        'videoUrl' => '', // URL du premier segment (ou vidéo complète)
+        'previewUrl' => '' // URL du premier segment preview (ou preview complet)
     ];
     
     // Découper vidéo principale
@@ -79,26 +109,68 @@ function gererDecoupageVideos($videoPath, $previewPath, $videoFilename, $preview
     
     if (!file_exists($ffmpegPath)) {
         logDebug("ATTENTION: FFmpeg non trouvé: $ffmpegPath");
+        
+        // Uploader la vidéo complète vers R2
+        $uploadResult = uploadToR2AndGetUrl($videoPath, $videoFilename, $produitId, 'video');
         $result['videoSegments'] = [$videoPath];
-        $result['videoUrl'] = 'video/' . $videoFilename;
+        $result['videoUrls'] = [$uploadResult['object_key']];
+        $result['videoUrl'] = $uploadResult['object_key'];
+        
+        // Supprimer le fichier local après upload
+        if (file_exists($videoPath)) {
+            unlink($videoPath);
+            logDebug("Vidéo locale supprimée après upload R2");
+        }
+        
     } else {
         logDebug("FFmpeg trouvé, découpage vidéo principale...");
         
         try {
             $videoSegments = couperVideo($videoPath, $segmentsDir, $ffmpegPath, 900);
-            $result['videoSegments'] = $videoSegments;
-            $result['videoUrl'] = 'video/segments/' . pathinfo($videoFilename, PATHINFO_FILENAME) . '/' . basename($videoSegments[0]);
-            logDebug("Vidéo découpée en " . count($videoSegments) . " segments");
             
-            // Supprimer vidéo originale après découpage
+            // Uploader chaque segment vers R2
+            $segmentIndex = 1;
+            foreach ($videoSegments as $segment) {
+                $uploadResult = uploadToR2AndGetUrl($segment, $videoFilename, $produitId, 'video', $segmentIndex);
+                $result['videoSegments'][] = $segment;
+                $result['videoUrls'][] = $uploadResult['object_key'];
+                
+                // Supprimer le segment local après upload
+                unlink($segment);
+                
+                if ($segmentIndex === 1) {
+                    $result['videoUrl'] = $uploadResult['object_key'];
+                }
+                
+                $segmentIndex++;
+            }
+            
+            // Supprimer le dossier des segments locaux
+            if (is_dir($segmentsDir)) {
+                rmdir($segmentsDir);
+            }
+            
+            // Supprimer vidéo originale après découpage et upload
             if (file_exists($videoPath)) {
                 unlink($videoPath);
                 logDebug("Vidéo originale supprimée");
             }
+            
+            logDebug("Vidéo découpée et uploadée vers R2: " . count($videoSegments) . " segments");
+            
         } catch (Exception $e) {
             logDebug("Erreur découpage: " . $e->getMessage());
+            
+            // Fallback: uploader la vidéo complète
+            $uploadResult = uploadToR2AndGetUrl($videoPath, $videoFilename, $produitId, 'video');
             $result['videoSegments'] = [$videoPath];
-            $result['videoUrl'] = 'video/' . $videoFilename;
+            $result['videoUrls'] = [$uploadResult['object_key']];
+            $result['videoUrl'] = $uploadResult['object_key'];
+            
+            // Supprimer le fichier local après upload
+            if (file_exists($videoPath)) {
+                unlink($videoPath);
+            }
         }
     }
     
@@ -107,32 +179,82 @@ function gererDecoupageVideos($videoPath, $previewPath, $videoFilename, $preview
         $previewSegmentsDir = $segmentsBaseDir . 'preview_' . pathinfo($previewFilename, PATHINFO_FILENAME);
         
         if (!file_exists($ffmpegPath)) {
-            logDebug("FFmpeg non trouvé, preview non découpé");
+            logDebug("FFmpeg non trouvé, upload preview complet");
+            
+            // Uploader le preview complet vers R2
+            $uploadResult = uploadToR2AndGetUrl($previewPath, $previewFilename, $produitId, 'preview');
             $result['previewSegments'] = [$previewPath];
-            $result['previewUrl'] = 'video/preview/' . $previewFilename;
+            $result['previewUrls'] = [$uploadResult['object_key']];
+            $result['previewUrl'] = $uploadResult['object_key'];
+            
+            // Supprimer le fichier local après upload
+            if (file_exists($previewPath)) {
+                unlink($previewPath);
+                logDebug("Preview local supprimé après upload R2");
+            }
+            
         } else {
             logDebug("Découpage vidéo d'aperçu...");
             
             try {
                 $previewSegments = couperVideo($previewPath, $previewSegmentsDir, $ffmpegPath, 900);
-                $result['previewSegments'] = $previewSegments;
-                $result['previewUrl'] = 'video/segments/preview_' . pathinfo($previewFilename, PATHINFO_FILENAME) . '/' . basename($previewSegments[0]);
-                logDebug("Preview découpé en " . count($previewSegments) . " segments");
                 
-                // Supprimer preview original après découpage
+                // Uploader chaque segment preview vers R2
+                $segmentIndex = 1;
+                foreach ($previewSegments as $segment) {
+                    $uploadResult = uploadToR2AndGetUrl($segment, $previewFilename, $produitId, 'preview', $segmentIndex);
+                    $result['previewSegments'][] = $segment;
+                    $result['previewUrls'][] = $uploadResult['object_key'];
+                    
+                    // Supprimer le segment local après upload
+                    unlink($segment);
+                    
+                    if ($segmentIndex === 1) {
+                        $result['previewUrl'] = $uploadResult['object_key'];
+                    }
+                    
+                    $segmentIndex++;
+                }
+                
+                // Supprimer le dossier des segments locaux
+                if (is_dir($previewSegmentsDir)) {
+                    rmdir($previewSegmentsDir);
+                }
+                
+                // Supprimer preview original après découpage et upload
                 if (file_exists($previewPath)) {
                     unlink($previewPath);
                     logDebug("Preview original supprimé");
                 }
+                
+                logDebug("Preview découpé et uploadé vers R2: " . count($previewSegments) . " segments");
+                
             } catch (Exception $e) {
                 logDebug("Erreur découpage preview: " . $e->getMessage());
+                
+                // Fallback: uploader le preview complet
+                $uploadResult = uploadToR2AndGetUrl($previewPath, $previewFilename, $produitId, 'preview');
                 $result['previewSegments'] = [$previewPath];
-                $result['previewUrl'] = 'video/preview/' . $previewFilename;
+                $result['previewUrls'] = [$uploadResult['object_key']];
+                $result['previewUrl'] = $uploadResult['object_key'];
+                
+                // Supprimer le fichier local après upload
+                if (file_exists($previewPath)) {
+                    unlink($previewPath);
+                }
             }
         }
     } elseif ($previewPath && file_exists($previewPath)) {
+        // Uploader le preview complet vers R2 (pas de découpage)
+        $uploadResult = uploadToR2AndGetUrl($previewPath, $previewFilename, $produitId, 'preview');
         $result['previewSegments'] = [$previewPath];
-        $result['previewUrl'] = 'video/preview/' . $previewFilename;
+        $result['previewUrls'] = [$uploadResult['object_key']];
+        $result['previewUrl'] = $uploadResult['object_key'];
+        
+        // Supprimer le fichier local après upload
+        if (file_exists($previewPath)) {
+            unlink($previewPath);
+        }
     }
     
     return $result;
@@ -143,7 +265,7 @@ try {
     error_reporting(E_ALL);
     ini_set('display_errors', 1);
     
-    logDebug("=== DÉBUT UPLOAD VIDÉO ===");
+    logDebug("=== DÉBUT UPLOAD VIDÉO CLOUDFLARE R2 ===");
     logDebug("Méthode: " . $_SERVER['REQUEST_METHOD']);
     logDebug("Content-Type: " . ($_SERVER['CONTENT_TYPE'] ?? 'Non défini'));
     
@@ -162,8 +284,6 @@ try {
     // Vérifier si le titre est vide ou null
     if ($titre === null || $titre === '' || empty($titre)) {
         logDebug("ERREUR: Titre est null, chaîne vide ou contient uniquement des espaces");
-        logDebug("Clés POST disponibles: " . implode(', ', array_keys($_POST)));
-        
         throw new Exception('Le titre est obligatoire');
     }
     
@@ -248,7 +368,7 @@ try {
     logDebug("Vidéo aperçu fournie: " . ($hasPreviewVideo ? "OUI" : "NON"));
 
     // 6. Validation taille fichiers
-    $maxFileSize = 500 * 1024 * 1024; // 500 MB
+    $maxFileSize = CLOUDFLARE_MAX_FILE_SIZE;
     if ($videoFile['size'] > $maxFileSize) {
         throw new Exception('Vidéo principale trop volumineuse (max 500 MB)');
     }
@@ -257,40 +377,25 @@ try {
     }
 
     // 7. Validation type MIME
-    $allowedMimes = [
-        'video/mp4', 'video/quicktime', 'video/x-msvideo', 
-        'video/x-ms-wmv', 'video/x-matroska', 'video/webm',
-        'video/x-flv', 'video/3gpp', 'application/octet-stream'
-    ];
-    
-    if (!in_array($videoFile['type'], $allowedMimes)) {
+    if (!in_array($videoFile['type'], CLOUDFLARE_ALLOWED_MIMES)) {
         logDebug("Type MIME vidéo non accepté: " . $videoFile['type']);
         // Ne pas bloquer, juste logger
     }
-    if ($hasPreviewVideo && !in_array($previewFile['type'], $allowedMimes)) {
+    if ($hasPreviewVideo && !in_array($previewFile['type'], CLOUDFLARE_ALLOWED_MIMES)) {
         logDebug("Type MIME preview non accepté: " . $previewFile['type']);
         // Ne pas bloquer, juste logger
     }
 
-    // 8. Création dossiers
-    $videoDir = __DIR__ . '/../video/';
-    $previewDir = __DIR__ . '/../video/preview/';
-    $segmentsBaseDir = __DIR__ . '/../video/segments/';
-    
-    if (!is_dir($videoDir)) {
-        if (!mkdir($videoDir, 0755, true)) {
-            throw new Exception('Impossible de créer dossier video');
+    // 8. Création dossiers temporaires locaux
+    $tempDir = __DIR__ . '/../temp_uploads/';
+    if (!is_dir($tempDir)) {
+        if (!mkdir($tempDir, 0755, true)) {
+            throw new Exception('Impossible de créer dossier temporaire');
         }
-        logDebug("Dossier video créé");
+        logDebug("Dossier temporaire créé");
     }
     
-    if (!is_dir($previewDir)) {
-        if (!mkdir($previewDir, 0755, true)) {
-            throw new Exception('Impossible de créer dossier preview');
-        }
-        logDebug("Dossier preview créé");
-    }
-    
+    $segmentsBaseDir = $tempDir . 'segments/';
     if (!is_dir($segmentsBaseDir)) {
         if (!mkdir($segmentsBaseDir, 0755, true)) {
             throw new Exception('Impossible de créer dossier segments');
@@ -312,36 +417,36 @@ try {
         return $prefix . '_' . $timestamp . '_' . $random . '.' . $extension;
     }
 
-    // 10. Noms fichiers
+    // 10. Noms fichiers temporaires
     $videoFilename = generateSecureFilename($videoFile['name'], 'video');
     $previewFilename = $hasPreviewVideo ? generateSecureFilename($previewFile['name'], 'preview') : null;
     
-    logDebug("Noms - Vidéo: $videoFilename, Preview: " . ($previewFilename ?: 'NULL'));
+    logDebug("Noms temporaires - Vidéo: $videoFilename, Preview: " . ($previewFilename ?: 'NULL'));
 
-    // 11. Chemins complets
-    $videoPath = $videoDir . $videoFilename;
-    $previewPath = $previewFilename ? $previewDir . $previewFilename : null;
+    // 11. Chemins complets temporaires
+    $videoPath = $tempDir . $videoFilename;
+    $previewPath = $previewFilename ? $tempDir . $previewFilename : null;
 
-    // 12. Déplacement vidéo principale
-    logDebug("Déplacement vidéo vers: $videoPath");
+    // 12. Déplacement vidéo principale vers dossier temporaire
+    logDebug("Déplacement vidéo vers temporaire: $videoPath");
     if (!move_uploaded_file($videoFile['tmp_name'], $videoPath)) {
         throw new Exception('Erreur déplacement vidéo principale');
     }
-    logDebug("Vidéo déplacée");
+    logDebug("Vidéo déplacée vers temporaire");
 
-    // 13. Déplacement vidéo d'aperçu
+    // 13. Déplacement vidéo d'aperçu vers dossier temporaire
     if ($hasPreviewVideo && $previewFilename && $previewPath) {
-        logDebug("Déplacement preview vers: $previewPath");
+        logDebug("Déplacement preview vers temporaire: $previewPath");
         if (!move_uploaded_file($previewFile['tmp_name'], $previewPath)) {
             if (file_exists($videoPath)) {
                 unlink($videoPath);
             }
             throw new Exception('Erreur déplacement vidéo d\'aperçu');
         }
-        logDebug("Preview déplacé");
+        logDebug("Preview déplacé vers temporaire");
     }
 
-    // 14. Vérification fichiers
+    // 14. Vérification fichiers temporaires
     if (!file_exists($videoPath) || filesize($videoPath) === 0) {
         throw new Exception('Vidéo principale non enregistrée');
     }
@@ -368,25 +473,30 @@ try {
         logDebug("FFmpeg trouvé à: $ffmpegPath");
     }
     
-    // ✅ Gestion découpage
-    logDebug("Début traitement FFmpeg...");
-    $decoupageResult = gererDecoupageVideos(
+    // ✅ Gestion découpage et upload vers Cloudflare R2
+    logDebug("Début traitement FFmpeg et upload Cloudflare R2...");
+    $decoupageResult = gererDecoupageEtUploadR2(
         $videoPath,
         $previewPath,
         $videoFilename,
         $previewFilename,
         $ffmpegPath,
         $segmentsBaseDir,
+        $produitId,
         $is_free
     );
     
     $videoSegments = $decoupageResult['videoSegments'];
     $previewSegments = $decoupageResult['previewSegments'];
-    $videoUrl = $decoupageResult['videoUrl'];
-    $previewUrl = $decoupageResult['previewUrl'];
+    $videoUrls = $decoupageResult['videoUrls'];
+    $previewUrls = $decoupageResult['previewUrls'];
+    $videoUrl = $decoupageResult['videoUrl']; // Clé R2 du premier segment
+    $previewUrl = $decoupageResult['previewUrl']; // Clé R2 du premier segment preview
     
     logDebug("Résultat - Vidéo segments: " . count($videoSegments) . 
-             ", Preview segments: " . count($previewSegments));
+             ", URLs R2: " . count($videoUrls) .
+             ", Preview segments: " . count($previewSegments) .
+             ", URLs R2 Preview: " . count($previewUrls));
 
     // 15. Vérifier colonnes table Video (PostgreSQL)
     try {
@@ -400,30 +510,28 @@ try {
         $hasDescription = false;
     }
 
-    // ✅ Insertion segments BDD
+    // ✅ Insertion segments BDD avec URLs Cloudflare R2
     try {
         $pdo->beginTransaction();
         
         $firstVideoId = null;
+        $totalSegments = count($videoUrls);
         
         // Insertion segments vidéo principale
-        foreach ($videoSegments as $index => $segment) {
+        foreach ($videoUrls as $index => $r2ObjectKey) {
             $segmentTitre = $titre;
-            if (count($videoSegments) > 1) {
+            if ($totalSegments > 1) {
                 $segmentTitre .= " - Partie " . ($index + 1);
             }
             
-            if (count($videoSegments) > 1) {
-                $segmentUrl = 'video/segments/' . pathinfo($videoFilename, PATHINFO_FILENAME) . '/' . basename($segment);
-            } else {
-                $segmentUrl = $videoUrl;
-            }
+            $segmentUrl = $r2ObjectKey; // Stocker la clé R2, pas l'URL complète
             
             $segmentOrdre = $ordre + $index;
             
             $segmentPreviewUrl = null;
-            if ($index === 0 && !empty($previewSegments)) {
-                $segmentPreviewUrl = $previewUrl;
+            // Associer le preview au premier segment seulement
+            if ($index === 0 && !empty($previewUrl)) {
+                $segmentPreviewUrl = $previewUrl; // Stocker la clé R2
             }
             
             if ($hasDescription) {
@@ -457,27 +565,37 @@ try {
                 $firstVideoId = $videoId;
             }
             
-            logDebug("Segment " . ($index + 1) . " inséré - ID: $videoId, Ordre: $segmentOrdre, URL: $segmentUrl");
+            logDebug("Segment " . ($index + 1) . " inséré - ID: $videoId, Ordre: $segmentOrdre, URL R2: $segmentUrl");
         }
         
         $pdo->commit();
         
-        logDebug("Total segments: " . count($videoSegments) . 
-                 ", Total aperçus: " . count($previewSegments) . 
+        logDebug("Total segments: " . $totalSegments . 
+                 ", Total aperçus: " . count($previewUrls) . 
                  ", ID première vidéo: $firstVideoId");
+        
+        // Générer les URLs publiques pour la réponse
+        $publicVideoUrl = generateCloudflareUrl($videoUrl);
+        $publicPreviewUrl = !empty($previewUrl) ? generateCloudflareUrl($previewUrl) : null;
         
         // Réponse succès
         $response = [
             'success' => true,
             'message' => $previewUrl 
-                ? 'Vidéo et aperçu enregistrés avec succès' 
-                : 'Vidéo enregistrée avec succès',
+                ? 'Vidéo et aperçu uploadés vers Cloudflare R2 avec succès' 
+                : 'Vidéo uploadée vers Cloudflare R2 avec succès',
             'id' => $firstVideoId,
-            'segments_count' => count($videoSegments),
-            'preview_segments_count' => count($previewSegments),
+            'segments_count' => $totalSegments,
+            'preview_segments_count' => count($previewUrls),
+            'cloudflare' => [
+                'video_url' => $publicVideoUrl,
+                'preview_url' => $publicPreviewUrl,
+                'video_object_key' => $videoUrl,
+                'preview_object_key' => $previewUrl
+            ],
             'data' => [
-                'video_url' => $videoUrl,
-                'preview_url' => $previewUrl,
+                'video_url' => $publicVideoUrl,
+                'preview_url' => $publicPreviewUrl,
                 'titre' => $titre,
                 'ordre' => $ordre,
                 'produitId' => $produitId,
@@ -489,7 +607,7 @@ try {
             $response['data']['description'] = $description;
         }
         
-        logDebug("=== UPLOAD RÉUSSI ===");
+        logDebug("=== UPLOAD R2 RÉUSSI ===");
         echo json_encode($response);
         
     } catch (Exception $dbError) {
@@ -497,25 +615,42 @@ try {
             $pdo->rollBack();
         }
         
-        // Nettoyage fichiers
+        // Nettoyage fichiers R2 en cas d'erreur
+        logDebug("Nettoyage fichiers R2 suite à erreur...");
+        try {
+            // Supprimer les vidéos uploadées vers R2
+            foreach ($videoUrls as $r2Key) {
+                deleteFromCloudflareR2($r2Key);
+            }
+            foreach ($previewUrls as $r2Key) {
+                deleteFromCloudflareR2($r2Key);
+            }
+            logDebug("Fichiers R2 nettoyés");
+        } catch (Exception $e) {
+            logDebug("Erreur lors du nettoyage R2: " . $e->getMessage());
+        }
+        
+        throw new Exception('Erreur BDD: ' . $dbError->getMessage());
+    } finally {
+        // Nettoyage des fichiers temporaires locaux
         if (file_exists($videoPath)) {
             unlink($videoPath);
-            logDebug("Fichier vidéo supprimé après erreur");
+            logDebug("Fichier vidéo temporaire supprimé");
         }
         if ($previewPath && file_exists($previewPath)) {
             unlink($previewPath);
-            logDebug("Fichier preview supprimé après erreur");
+            logDebug("Fichier preview temporaire supprimé");
         }
         
-        // Nettoyer segments
+        // Nettoyer segments locaux restants
         $videoSegmentsDir = $segmentsBaseDir . pathinfo($videoFilename, PATHINFO_FILENAME);
         if (is_dir($videoSegmentsDir)) {
             $segmentFiles = glob($videoSegmentsDir . "/*.mp4");
             foreach ($segmentFiles as $segment) {
-                unlink($segment);
+                if (file_exists($segment)) unlink($segment);
             }
-            rmdir($videoSegmentsDir);
-            logDebug("Segments vidéo nettoyés");
+            @rmdir($videoSegmentsDir);
+            logDebug("Segments vidéo temporaires nettoyés");
         }
         
         if ($hasPreviewVideo) {
@@ -523,19 +658,17 @@ try {
             if (is_dir($previewSegmentsDir)) {
                 $previewSegmentFiles = glob($previewSegmentsDir . "/*.mp4");
                 foreach ($previewSegmentFiles as $segment) {
-                    unlink($segment);
+                    if (file_exists($segment)) unlink($segment);
                 }
-                rmdir($previewSegmentsDir);
-                logDebug("Segments preview nettoyés");
+                @rmdir($previewSegmentsDir);
+                logDebug("Segments preview temporaires nettoyés");
             }
         }
-        
-        throw new Exception('Erreur BDD: ' . $dbError->getMessage());
     }
     
 } catch (Exception $e) {
     logDebug("ERREUR: " . $e->getMessage());
-    logDebug("=== FIN UPLOAD (ÉCHEC) ===");
+    logDebug("=== FIN UPLOAD R2 (ÉCHEC) ===");
     
     http_response_code(500);
     echo json_encode([

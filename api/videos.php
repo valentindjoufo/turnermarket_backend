@@ -1,6 +1,9 @@
 <?php
-// Inclure la configuration de connexion à la base de données
-require_once  'config.php';
+// Inclure les configurations
+require_once 'config.php';
+require_once 'cloudflare-config.php';
+
+use Aws\S3\S3Client;
 
 // Headers pour CORS
 header("Access-Control-Allow-Origin: *");
@@ -21,27 +24,39 @@ if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
     exit();
 }
 
-// ✅ FONCTION : Nettoyer les fichiers d'une vidéo (vidéo + segments)
+// ✅ FONCTION : Supprimer les fichiers d'une vidéo (Cloudflare R2 + local)
 function cleanVideoFiles($videoUrl, $previewUrl = null) {
-    // Supprimer la vidéo principale
+    error_log("🗑️ Nettoyage fichiers pour vidéo");
+    
+    // Supprimer de Cloudflare R2
+    try {
+        if (!empty($videoUrl)) {
+            $videoDeleted = deleteFromCloudflareR2($videoUrl);
+            error_log($videoDeleted ? "✅ Vidéo supprimée de Cloudflare R2" : "⚠️ Échec suppression vidéo R2");
+        }
+        
+        if (!empty($previewUrl)) {
+            $previewDeleted = deleteFromCloudflareR2($previewUrl);
+            error_log($previewDeleted ? "✅ Preview supprimé de Cloudflare R2" : "⚠️ Échec suppression preview R2");
+        }
+    } catch (Exception $e) {
+        error_log("⚠️ Erreur lors de la suppression Cloudflare: " . $e->getMessage());
+    }
+    
+    // Supprimer localement (pour compatibilité descendante)
     if (!empty($videoUrl) && !preg_match('/^https?:\/\//', $videoUrl)) {
         $localFile = __DIR__ . '/../' . ltrim($videoUrl, '/');
-        error_log("🗑️ Suppression fichier: $localFile");
         if (file_exists($localFile)) {
             unlink($localFile);
-            error_log("✅ Fichier supprimé");
-        } else {
-            error_log("⚠️ Fichier non trouvé: $localFile");
+            error_log("✅ Fichier local supprimé");
         }
     }
-
-    // Supprimer le preview
+    
     if (!empty($previewUrl) && !preg_match('/^https?:\/\//', $previewUrl)) {
         $localPreviewFile = __DIR__ . '/../' . ltrim($previewUrl, '/');
-        error_log("🗑️ Suppression preview: $localPreviewFile");
         if (file_exists($localPreviewFile)) {
             unlink($localPreviewFile);
-            error_log("✅ Preview supprimé");
+            error_log("✅ Preview local supprimé");
         }
     }
 }
@@ -75,6 +90,11 @@ function getBaseTitle($title) {
 function getSegmentNumber($title) {
     preg_match('/Partie (\d+)$/', $title, $matches);
     return isset($matches[1]) ? intval($matches[1]) : 1;
+}
+
+// ✅ FONCTION : Générer une URL Cloudflare R2
+function generateCloudflareVideoUrl($objectKey) {
+    return generateCloudflareUrl($objectKey);
 }
 
 // Méthode de la requête
@@ -122,7 +142,19 @@ if ($method === 'GET') {
             exit;
         }
         
-        // 2. Grouper les vidéos par titre de base
+        // 2. Convertir les URLs Cloudflare si nécessaire
+        foreach ($videos as &$video) {
+            // Si l'URL est une clé R2, la convertir en URL complète
+            if (!empty($video['url']) && !preg_match('/^https?:\/\//', $video['url'])) {
+                $video['url'] = generateCloudflareVideoUrl($video['url']);
+            }
+            
+            if (!empty($video['preview_url']) && !preg_match('/^https?:\/\//', $video['preview_url'])) {
+                $video['preview_url'] = generateCloudflareVideoUrl($video['preview_url']);
+            }
+        }
+        
+        // 3. Grouper les vidéos par titre de base
         $groupedVideos = [];
         
         foreach ($videos as $video) {
@@ -167,7 +199,7 @@ if ($method === 'GET') {
             }
         }
         
-        // 3. Traiter chaque groupe pour trier les segments et définir les propriétés
+        // 4. Traiter chaque groupe pour trier les segments et définir les propriétés
         $finalVideos = [];
         
         foreach ($groupedVideos as $baseTitle => $videoData) {
@@ -193,7 +225,6 @@ if ($method === 'GET') {
                 $videoData['has_preview'] = $hasPreviewSegments;
                 
                 // Définir l'URL principale comme premier segment non-preview
-                // Si tous les segments sont des previews, utiliser le premier segment
                 $mainUrlSet = false;
                 foreach ($videoData['segments'] as $segment) {
                     if (!$segment['is_preview']) {
@@ -207,11 +238,10 @@ if ($method === 'GET') {
                     $videoData['url'] = $videoData['segments'][0]['url'];
                 }
                 
-                // Calculer la durée totale (somme de toutes les durées non-preview)
+                // Calculer la durée totale
                 $totalDuration = 0;
                 foreach ($videoData['segments'] as $segment) {
                     if (!$segment['is_preview'] && !empty($segment['duree'])) {
-                        // Convertir la durée en secondes si nécessaire
                         if (strpos($segment['duree'], ':') !== false) {
                             $parts = explode(':', $segment['duree']);
                             if (count($parts) == 2) {
@@ -233,14 +263,14 @@ if ($method === 'GET') {
             $finalVideos[] = $videoData;
         }
         
-        // 4. Trier les vidéos finales par ordre
+        // 5. Trier les vidéos finales par ordre
         usort($finalVideos, function($a, $b) {
             return $a['ordre'] - $b['ordre'];
         });
         
         error_log("✅ Envoi de " . count($finalVideos) . " vidéo(s) au client");
         
-        // 5. Retourner les données
+        // 6. Retourner les données
         echo json_encode($finalVideos, JSON_UNESCAPED_UNICODE | JSON_PRETTY_PRINT);
         
     } catch (PDOException $e) {
@@ -306,7 +336,7 @@ if ($method === 'DELETE') {
         
         error_log("📊 Recherche segments pour: '$baseTitle', trouvés: " . count($allSegments));
         
-        // 3. Supprimer tous les fichiers physiques
+        // 3. Supprimer tous les fichiers physiques (Cloudflare R2 + local)
         foreach ($allSegments as $segment) {
             cleanVideoFiles($segment['url'], $segment['preview_url']);
         }
@@ -479,11 +509,11 @@ if ($method === 'PUT') {
     exit;
 }
 
-// ========== POST - Ajouter une vidéo ==========
+// ========== POST - Ajouter une vidéo (Cloudflare R2) ==========
 if ($method === 'POST') {
     $input = json_decode(file_get_contents("php://input"), true);
     
-    if (!$input || !isset($input['titre']) || !isset($input['url']) || !isset($input['produitId'])) {
+    if (!$input || !isset($input['titre']) || !isset($input['produitId'])) {
         http_response_code(400);
         echo json_encode(['error' => 'Données requises manquantes']);
         exit;
@@ -495,24 +525,38 @@ if ($method === 'POST') {
         $columns = $checkColumns->fetchAll(PDO::FETCH_COLUMN);
         
         $titre = trim($input['titre']);
-        $url = trim($input['url']);
         $produitId = intval($input['produitId']);
         $ordre = isset($input['ordre']) ? intval($input['ordre']) : 0;
-
-        $insertFields = ["titre", "url", "ordre", "produitId"];
-        $insertValues = ["?", "?", "?", "?"];
-        $params = [$titre, $url, $ordre, $produitId];
-
+        
+        // Si on reçoit directement une URL R2
+        if (isset($input['url'])) {
+            $url = trim($input['url']);
+            $objectKey = extractObjectKeyFromUrl($url);
+            $urlToStore = $objectKey ?: $url;
+        } else {
+            $urlToStore = null;
+        }
+        
+        $insertFields = ["titre", "ordre", "produitId"];
+        $insertValues = ["?", "?", "?"];
+        $params = [$titre, $ordre, $produitId];
+        
+        // Ajouter l'URL si elle existe
+        if ($urlToStore) {
+            $insertFields[] = "url";
+            $insertValues[] = "?";
+            $params[] = $urlToStore;
+        }
+        
+        // Ajouter le preview_url si fourni
         if (in_array('preview_url', $columns) && isset($input['preview_url'])) {
+            $previewUrl = trim($input['preview_url']);
+            $previewKey = extractObjectKeyFromUrl($previewUrl);
             $insertFields[] = "preview_url";
             $insertValues[] = "?";
-            $params[] = trim($input['preview_url']);
+            $params[] = $previewKey ?: $previewUrl;
         }
-        if (in_array('preview_duration', $columns) && isset($input['preview_duration'])) {
-            $insertFields[] = "preview_duration";
-            $insertValues[] = "?";
-            $params[] = intval($input['preview_duration']);
-        }
+        
         if (in_array('duree', $columns) && isset($input['duree'])) {
             $insertFields[] = "duree";
             $insertValues[] = "?";
@@ -534,10 +578,24 @@ if ($method === 'POST') {
         $newId = $pdo->lastInsertId();
         error_log("✅ Nouvelle vidéo ajoutée - ID: $newId");
         
+        // Récupérer l'URL complète pour la réponse
+        $fullUrl = $urlToStore ? generateCloudflareVideoUrl($urlToStore) : null;
+        $fullPreviewUrl = isset($previewUrl) ? generateCloudflareVideoUrl($previewKey ?: $previewUrl) : null;
+        
         echo json_encode([
             'success' => true, 
             'message' => 'Vidéo ajoutée avec succès', 
-            'id' => $newId
+            'id' => $newId,
+            'cloudflare_url' => $fullUrl,
+            'cloudflare_preview_url' => $fullPreviewUrl,
+            'data' => [
+                'id' => $newId,
+                'titre' => $titre,
+                'url' => $fullUrl,
+                'preview_url' => $fullPreviewUrl,
+                'ordre' => $ordre,
+                'produitId' => $produitId
+            ]
         ]);
         
     } catch (PDOException $e) {
