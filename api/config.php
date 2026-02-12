@@ -1,6 +1,12 @@
 <?php
+// Activer l'affichage des erreurs (à retirer en production)
+error_reporting(E_ALL);
+ini_set('display_errors', 1);
+
+// Forcer le type JSON
 header("Content-Type: application/json; charset=UTF-8");
 
+// Récupérer l'URL de la base de données depuis l'environnement Render
 $databaseUrl = getenv("DATABASE_URL");
 if (!$databaseUrl) {
     http_response_code(500);
@@ -49,3 +55,12 @@ try {
 }
 
 $pdo = $conn;
+
+// ✅ RÉPONSE DE SUCCÈS – ENVOI D'UN JSON
+echo json_encode([
+    'success' => true,
+    'message' => 'Connexion à la base de données réussie',
+    'database' => $db,
+    'timestamp' => date('Y-m-d H:i:s')
+]);
+exit;
