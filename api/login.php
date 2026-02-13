@@ -5,7 +5,7 @@ header("Access-Control-Allow-Headers: Content-Type, ngrok-skip-browser-warning")
 header("Access-Control-Allow-Methods: POST, OPTIONS");
 header("Content-Type: application/json; charset=UTF-8");
 
-// ⏱️ AJOUT: Timeout plus long pour debug
+// ⏱️ Timeout plus long pour debug
 set_time_limit(30);
 
 // ✅ Réponse aux requêtes pré-vol (OPTIONS)
@@ -28,7 +28,7 @@ error_log("Method: " . $_SERVER['REQUEST_METHOD']);
 error_log("Raw Input: " . $rawInput);
 error_log("Decoded: " . print_r($data, true));
 
-// ⚠️ AJOUT: Vérifier si le JSON est valide
+// ⚠️ Vérifier si le JSON est valide
 if (json_last_error() !== JSON_ERROR_NONE) {
     error_log("JSON Error: " . json_last_error_msg());
     http_response_code(400);
@@ -47,9 +47,11 @@ $email = trim($data['email']);
 $motDePasse = trim($data['motDePasse']);
 
 error_log("Attempting login for: $email");
+error_log("Password length: " . strlen($motDePasse));
 
 try {
-    $stmt = $pdo->prepare("SELECT id, nom, email, role, etat, motDePasse, telephone, nationalite FROM Utilisateur WHERE email = ?");
+    // ✅ CORRECTION : Utiliser les noms de colonnes en MINUSCULE (PostgreSQL)
+    $stmt = $pdo->prepare("SELECT id, nom, email, role, etat, motdepasse, telephone, nationalite FROM utilisateur WHERE email = ?");
     $stmt->execute([$email]);
     $user = $stmt->fetch(PDO::FETCH_ASSOC);
 
@@ -61,9 +63,12 @@ try {
     }
 
     error_log("User found, checking password");
+    error_log("Hash from DB: " . substr($user['motdepasse'], 0, 30) . "... (length: " . strlen($user['motdepasse']) . ")");
     
-    if (!password_verify($motDePasse, $user['motDePasse'])) {
+    // ✅ CORRECTION : Utiliser motdepasse en minuscule
+    if (!password_verify($motDePasse, $user['motdepasse'])) {
         error_log("Password incorrect for: $email");
+        error_log("Verification failed for password: '$motDePasse'");
         http_response_code(401);
         echo json_encode(['success' => false, 'message' => 'Mot de passe incorrect']);
         exit;

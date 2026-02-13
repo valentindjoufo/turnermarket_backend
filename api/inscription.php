@@ -221,7 +221,7 @@ try {
     }
 
     // 🔍 Vérifier si l'email ou téléphone existe déjà
-    $checkStmt = $pdo->prepare("SELECT id FROM Utilisateur WHERE email = ? OR telephone = ?");
+    $checkStmt = $pdo->prepare("SELECT id FROM utilisateur WHERE email = ? OR telephone = ?");
     $checkStmt->execute([$email, $telephone]);
     
     if ($checkStmt->fetch()) {
@@ -238,11 +238,12 @@ try {
     }
 
     // 📝 Insertion dans la base de données
+    // ✅ CORRECTION : Utiliser les noms de colonnes en MINUSCULE (PostgreSQL)
     $stmt = $pdo->prepare("
-        INSERT INTO Utilisateur (
-            matricule, nom, sexe, nationalite, telephone, email, motDePasse, photoProfil,
-            role, etat, dateCreation, nombreFollowers, nombreFollowing, 
-            noteVendeur, soldeVendeur, nbVentes, statutVendeur
+        INSERT INTO utilisateur (
+            matricule, nom, sexe, nationalite, telephone, email, motdepasse, photoprofil,
+            role, etat, datecreation, nombrefollowers, nombrefollowing, 
+            notevendeur, soldevendeur, nbventes, statutvendeur
         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'client', 'actif', NOW(), 0, 0, 0, 0, 0, 'nouveau')
     ");
     
