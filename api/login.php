@@ -1,85 +1,117 @@
 <?php
-// api/login.php
-header('Content-Type: application/json; charset=utf-8');
-header('Access-Control-Allow-Origin: *'); // À restreindre en prod
-header('Access-Control-Allow-Methods: POST');
-header('Access-Control-Allow-Headers: Content-Type');
+// 🌐 Gestion CORS
+header("Access-Control-Allow-Origin: *");
+header("Access-Control-Allow-Headers: Content-Type, ngrok-skip-browser-warning");
+header("Access-Control-Allow-Methods: POST, OPTIONS");
+header("Content-Type: application/json; charset=UTF-8");
 
-require_once 'config.php'; // Connexion à la DB
+// ⏱️ AJOUT: Timeout plus long pour debug
+set_time_limit(30);
+
+// ✅ Réponse aux requêtes pré-vol (OPTIONS)
+if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
+    http_response_code(200);
+    exit();
+}
+
+// 📦 Connexion à la base
+require 'config.php';
+
+// 🧾 Lecture du JSON
+$rawInput = file_get_contents("php://input");
+$data = json_decode($rawInput, true);
+
+// 🔍 Log de débogage amélioré
+error_log("=== LOGIN REQUEST ===");
+error_log("Timestamp: " . date('Y-m-d H:i:s'));
+error_log("Method: " . $_SERVER['REQUEST_METHOD']);
+error_log("Raw Input: " . $rawInput);
+error_log("Decoded: " . print_r($data, true));
+
+// ⚠️ AJOUT: Vérifier si le JSON est valide
+if (json_last_error() !== JSON_ERROR_NONE) {
+    error_log("JSON Error: " . json_last_error_msg());
+    http_response_code(400);
+    echo json_encode(['success' => false, 'message' => 'JSON invalide']);
+    exit;
+}
+
+if (!isset($data['email'], $data['motDePasse'])) {
+    error_log("Missing fields");
+    http_response_code(400);
+    echo json_encode(['success' => false, 'message' => 'Champs requis manquants']);
+    exit;
+}
+
+$email = trim($data['email']);
+$motDePasse = trim($data['motDePasse']);
+
+error_log("Attempting login for: $email");
 
 try {
-    // Lire les données JSON brutes
-    $json = file_get_contents('php://input');
-    $data = json_decode($json, true);
-
-    if (!$data) {
-        http_response_code(400);
-        echo json_encode(['success' => false, 'message' => 'JSON invalide ou vide']);
-        exit;
-    }
-
-    // Récupérer et nettoyer les champs
-    $email = isset($data['email']) ? trim($data['email']) : '';
-    $motDePasse = isset($data['motDePasse']) ? trim($data['motDePasse']) : '';
-
-    if (!$email || !$motDePasse) {
-        http_response_code(422);
-        echo json_encode(['success' => false, 'message' => 'Email et mot de passe obligatoires']);
-        exit;
-    }
-
-    // Préparer et exécuter la requête sécurisée
-    $stmt = $db->prepare("SELECT id, email, nom, role, mot_de_passe, telephone, nationalite, actif 
-                          FROM utilisateurs WHERE email = :email LIMIT 1");
-    $stmt->bindParam(':email', $email);
-    $stmt->execute();
+    $stmt = $pdo->prepare("SELECT id, nom, email, role, etat, motDePasse, telephone, nationalite FROM Utilisateur WHERE email = ?");
+    $stmt->execute([$email]);
     $user = $stmt->fetch(PDO::FETCH_ASSOC);
 
     if (!$user) {
+        error_log("User not found: $email");
         http_response_code(401);
-        echo json_encode(['success' => false, 'message' => 'Email ou mot de passe incorrect']);
+        echo json_encode(['success' => false, 'message' => 'Adresse email incorrecte']);
         exit;
     }
 
-    // Vérifier si le compte est actif
-    if ((int)$user['actif'] === 0) {
+    error_log("User found, checking password");
+    
+    if (!password_verify($motDePasse, $user['motDePasse'])) {
+        error_log("Password incorrect for: $email");
+        http_response_code(401);
+        echo json_encode(['success' => false, 'message' => 'Mot de passe incorrect']);
+        exit;
+    }
+
+    error_log("Password correct, checking account state");
+
+    // ✅ Vérifie si le compte est désactivé
+    if ($user['etat'] === 'inactif' || $user['etat'] === '0' || $user['etat'] === 0) {
+        error_log("Account disabled for: $email");
         http_response_code(403);
         echo json_encode([
             'success' => false,
-            'message' => 'Votre compte a été désactivé',
+            'message' => 'Votre compte a été désactivé. Veuillez contacter l\'administrateur.',
             'utilisateur' => [
                 'id' => $user['id'],
+                'nom' => $user['nom'],
                 'email' => $user['email'],
-                'nom' => $user['nom']
+                'role' => $user['role'],
+                'etat' => $user['etat']
             ]
         ]);
         exit;
     }
 
-    // Vérifier le mot de passe (assume password_hash côté serveur)
-    if (!password_verify($motDePasse, $user['mot_de_passe'])) {
-        http_response_code(401);
-        echo json_encode(['success' => false, 'message' => 'Email ou mot de passe incorrect']);
-        exit;
-    }
-
-    // Connexion réussie
+    error_log("Login successful for: $email (ID: {$user['id']})");
+    
+    // ✅ Connexion réussie
+    http_response_code(200);
     echo json_encode([
         'success' => true,
         'message' => 'Connexion réussie',
         'utilisateur' => [
             'id' => $user['id'],
-            'email' => $user['email'],
             'nom' => $user['nom'],
+            'email' => $user['email'],
             'role' => $user['role'],
-            'telephone' => $user['telephone'],
-            'nationalite' => $user['nationalite']
+            'etat' => $user['etat'],
+            'telephone' => $user['telephone'] ?? '',
+            'nationalite' => $user['nationalite'] ?? 'Cameroun'
         ]
     ]);
+    exit;
 
-} catch (Exception $e) {
+} catch (PDOException $e) {
+    error_log("Database error: " . $e->getMessage());
     http_response_code(500);
-    echo json_encode(['success' => false, 'message' => 'Erreur serveur: ' . $e->getMessage()]);
+    echo json_encode(['success' => false, 'message' => 'Erreur serveur']);
+    exit;
 }
 ?>
-    
