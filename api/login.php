@@ -16,6 +16,19 @@ if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
 // Connexion à la base
 require 'config.php';
 
+
+// =============================
+// 🔥 TEST DIAGNOSTIC BASE
+// =============================
+try {
+    $countTest = $pdo->query("SELECT COUNT(*) FROM utilisateur")->fetchColumn();
+    error_log("DEBUG USERS COUNT = " . $countTest);
+} catch (Exception $e) {
+    error_log("DEBUG TABLE ERROR = " . $e->getMessage());
+}
+// =============================
+
+
 // Lecture du JSON brut
 $rawInput = file_get_contents("php://input");
 
@@ -116,3 +129,4 @@ try {
     echo json_encode(['success' => false, 'message' => 'Erreur serveur. Veuillez réessayer plus tard.']);
     exit;
 }
+?>
