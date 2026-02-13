@@ -1,7 +1,7 @@
 <?php
 /**
  * inscription.php - Gestion de l'inscription des utilisateurs
- * Version avec connexion PostgreSQL via config.php
+ * Version CORRIGÉE avec TRIM sur tous les champs
  */
 
 // 📦 Inclusion de la configuration (connexion PDO PostgreSQL)
@@ -13,7 +13,7 @@ header("Access-Control-Allow-Headers: Content-Type");
 header("Access-Control-Allow-Methods: GET, POST, OPTIONS");
 header("Content-Type: application/json; charset=UTF-8");
 
-// 📤 Gestion des requêtes pré-vol OPTIONS (nécessaire pour CORS côté Web)
+// 📤 Gestion des requêtes pré-vol OPTIONS
 if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
     http_response_code(200);
     exit();
@@ -105,13 +105,15 @@ try {
     if (strpos($contentType, 'multipart/form-data') !== false || !empty($_FILES)) {
         error_log("📤 Formulaire multipart détecté");
         
-        // Récupération des données depuis $_POST
-        $nom = $_POST['nom'] ?? '';
-        $sexe = $_POST['sexe'] ?? '';
-        $nationalite = $_POST['nationalite'] ?? '';
-        $telephone = $_POST['telephone'] ?? '';
-        $email = $_POST['email'] ?? '';
-        $motDePasse = $_POST['motDePasse'] ?? '';
+        // ✅ CORRECTION : Récupération des données avec TRIM
+        $nom = trim($_POST['nom'] ?? '');
+        $sexe = trim($_POST['sexe'] ?? '');
+        $nationalite = trim($_POST['nationalite'] ?? '');
+        $telephone = trim($_POST['telephone'] ?? '');
+        $email = trim($_POST['email'] ?? '');
+        $motDePasse = trim($_POST['motDePasse'] ?? '');  // ✅ TRIM AJOUTÉ
+        
+        error_log("📝 Mot de passe reçu (FormData) : '$motDePasse' (longueur: " . strlen($motDePasse) . ")");
         
         // 📷 Upload de la photo si présente
         if (isset($_FILES['photoProfil']) && $_FILES['photoProfil']['error'] !== UPLOAD_ERR_NO_FILE) {
@@ -140,12 +142,15 @@ try {
             exit;
         }
         
-        $nom = $data['nom'] ?? '';
-        $sexe = $data['sexe'] ?? '';
-        $nationalite = $data['nationalite'] ?? '';
-        $telephone = $data['telephone'] ?? '';
-        $email = $data['email'] ?? '';
-        $motDePasse = $data['motDePasse'] ?? '';
+        // ✅ CORRECTION : Trim sur les données JSON aussi
+        $nom = trim($data['nom'] ?? '');
+        $sexe = trim($data['sexe'] ?? '');
+        $nationalite = trim($data['nationalite'] ?? '');
+        $telephone = trim($data['telephone'] ?? '');
+        $email = trim($data['email'] ?? '');
+        $motDePasse = trim($data['motDePasse'] ?? '');  // ✅ TRIM AJOUTÉ
+        
+        error_log("📝 Mot de passe reçu (JSON) : '$motDePasse' (longueur: " . strlen($motDePasse) . ")");
     }
 
     // 🛡️ Vérification des champs requis
@@ -206,6 +211,14 @@ try {
 
     // 🔐 Hachage du mot de passe
     $motDePasseHache = password_hash($motDePasse, PASSWORD_DEFAULT);
+    error_log("🔐 Hash généré : " . substr($motDePasseHache, 0, 30) . "... (longueur: " . strlen($motDePasseHache) . ")");
+    
+    // ✅ TEST : Vérifier immédiatement que le hash fonctionne
+    if (password_verify($motDePasse, $motDePasseHache)) {
+        error_log("✅ Vérification hash : OK - Le mot de passe peut être vérifié");
+    } else {
+        error_log("❌ ERREUR CRITIQUE : Le hash ne peut pas être vérifié !");
+    }
 
     // 🔍 Vérifier si l'email ou téléphone existe déjà
     $checkStmt = $pdo->prepare("SELECT id FROM Utilisateur WHERE email = ? OR telephone = ?");
@@ -247,6 +260,7 @@ try {
     $userId = $pdo->lastInsertId();
     
     error_log("✅ Utilisateur créé - ID: $userId, Matricule: $matricule, Nom: $nom");
+    error_log("✅ Email: $email, Mot de passe hashé stocké");
 
     $response = [
         "success" => true,
