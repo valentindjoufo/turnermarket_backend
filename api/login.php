@@ -5,7 +5,6 @@ header("Access-Control-Allow-Headers: Content-Type, ngrok-skip-browser-warning")
 header("Access-Control-Allow-Methods: POST, OPTIONS");
 header("Content-Type: application/json; charset=UTF-8");
 
-// ⏱️ AJOUT: Timeout plus long pour debug
 set_time_limit(30);
 
 // ✅ Réponse aux requêtes pré-vol (OPTIONS)
@@ -19,27 +18,34 @@ require 'config.php';
 
 // 🧾 Lecture du JSON
 $rawInput = file_get_contents("php://input");
-$data = json_decode($rawInput, true);
 
-// 🔍 Log de débogage amélioré
+// 🧹 NETTOYAGE INDISPENSABLE : supprimer le BOM et les espaces blancs inutiles
+$cleanInput = preg_replace('/^\xEF\xBB\xBF/', '', $rawInput); // supprime BOM UTF-8
+$cleanInput = trim($cleanInput);                             // supprime espaces, retours à la ligne
+
+// 🔍 LOGS DE DÉBOGAGE (utiles pour vérifier ce qui est reçu)
 error_log("=== LOGIN REQUEST ===");
 error_log("Timestamp: " . date('Y-m-d H:i:s'));
 error_log("Method: " . $_SERVER['REQUEST_METHOD']);
-error_log("Raw Input: " . $rawInput);
-error_log("Decoded: " . print_r($data, true));
+error_log("Raw Input (hex): " . bin2hex(substr($rawInput, 0, 50)) . "...");
+error_log("Clean Input: " . $cleanInput);
 
-// ⚠️ AJOUT: Vérifier si le JSON est valide
+// 📦 Décodage JSON
+$data = json_decode($cleanInput, true);
+
+// ⚠️ Vérification stricte du JSON
 if (json_last_error() !== JSON_ERROR_NONE) {
     error_log("JSON Error: " . json_last_error_msg());
     http_response_code(400);
-    echo json_encode(['success' => false, 'message' => 'JSON invalide']);
+    echo json_encode(['success' => false, 'message' => 'JSON invalide (erreur de syntaxe)']);
     exit;
 }
 
-if (!isset($data['email'], $data['motDePasse'])) {
-    error_log("Missing fields");
+// ❌ Vérification que $data est un tableau et contient les champs requis
+if (!is_array($data) || !isset($data['email'], $data['motDePasse'])) {
+    error_log("Missing fields or invalid structure");
     http_response_code(400);
-    echo json_encode(['success' => false, 'message' => 'Champs requis manquants']);
+    echo json_encode(['success' => false, 'message' => 'Champs requis manquants ou structure incorrecte']);
     exit;
 }
 
@@ -60,8 +66,6 @@ try {
         exit;
     }
 
-    error_log("User found, checking password");
-    
     if (!password_verify($motDePasse, $user['motDePasse'])) {
         error_log("Password incorrect for: $email");
         http_response_code(401);
@@ -69,9 +73,7 @@ try {
         exit;
     }
 
-    error_log("Password correct, checking account state");
-
-    // ✅ Vérifie si le compte est désactivé
+    // ✅ Vérification du compte désactivé
     if ($user['etat'] === 'inactif' || $user['etat'] === '0' || $user['etat'] === 0) {
         error_log("Account disabled for: $email");
         http_response_code(403);
@@ -91,7 +93,6 @@ try {
 
     error_log("Login successful for: $email (ID: {$user['id']})");
     
-    // ✅ Connexion réussie
     http_response_code(200);
     echo json_encode([
         'success' => true,
@@ -111,7 +112,8 @@ try {
 } catch (PDOException $e) {
     error_log("Database error: " . $e->getMessage());
     http_response_code(500);
-    echo json_encode(['success' => false, 'message' => 'Erreur serveur', 'debug' => $e->getMessage()]);
+    // ⚠️ Ne pas exposer les détails de l'erreur en production
+    echo json_encode(['success' => false, 'message' => 'Erreur serveur. Veuillez réessayer plus tard.']);
     exit;
 }
 ?>
