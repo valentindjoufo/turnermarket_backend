@@ -3,7 +3,7 @@
 -- Date : 2026-02-08
 
 BEGIN;
-
+use gestvente;
 -- Table des commentaires
 CREATE TABLE commentaire (
   id SERIAL PRIMARY KEY,
@@ -990,7 +990,7 @@ INSERT INTO remboursement (id, venteId, produitId, acheteurId, vendeurId, montan
 (29, 131, 752, 4, 2, '200.00', 'Arnaque suspectée', 0, 'demande', NULL, NULL, '2026-01-20 14:47:05');
 
 SELECT setval('remboursement_id_seq', COALESCE((SELECT MAX(id) FROM remboursement), 0) + 1);
-
+select *  from utilisateur;
 -- Insertion des données dans la table utilisateur
 INSERT INTO utilisateur (id, matricule, nom, sexe, nationalite, telephone, email, motDePasse, role, dateCreation, google_id, etat, soldeVendeur, compteBancaire, operateurMobile, numeroMobilePaiement, identiteVerifiee, emailVerifie, telephoneVerifie, dateVerificationIdentite, documentIdentite, nbVentes, noteVendeur, statutVendeur, photoProfil, nombreFollowers, nombreFollowing) VALUES
 (1, 'USR685DA54826CCA', 'Koh djoufo Valentin', 'Homme', 'Cameroun', '+237651436857', 'valentindjoufo@gmail.com', '$2y$10$yAqkvHXKbe1aqghEyM.y0e8EJwo9U5OjHLHTSoLO8655UwH0WqzwK', 'admin', '2025-06-26 20:53:44', NULL, 'actif', '0.00', NULL, NULL, NULL, FALSE, FALSE, FALSE, NULL, NULL, 0, '0.00', 'nouveau', NULL, 0, 0),

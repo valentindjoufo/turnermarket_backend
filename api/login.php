@@ -49,7 +49,7 @@ $motDePasse = trim($data['motDePasse']);
 error_log("Attempting login for: $email");
 
 try {
-    $stmt = $pdo->prepare("SELECT id, nom, email, role, etat, motDePasse, telephone, nationalite FROM Utilisateur WHERE email = ?");
+    $stmt = $pdo->prepare("SELECT id, nom, email, role, etat, motDePasse, telephone, nationalite FROM utilisateur WHERE email = ?");
     $stmt->execute([$email]);
     $user = $stmt->fetch(PDO::FETCH_ASSOC);
 
