@@ -1,6 +1,7 @@
 <?php
 /**
- * save_token.php - Enregistrement des tokens de notification push
+ * save-token.php - Enregistrement des tokens de notification push
+ * VERSION CORRIGÉE pour PostgreSQL
  */
 
 // 🚦 Gestion CORS
@@ -59,26 +60,26 @@ try {
         exit;
     }
 
-    // Créer la table si elle n'existe pas
+    // ✅ CORRECTION : Créer la table avec noms PostgreSQL compatibles
     $pdo->exec("
         CREATE TABLE IF NOT EXISTS push_tokens (
             id SERIAL PRIMARY KEY,
-            user_id INTEGER NOT NULL,
+            userid INTEGER NOT NULL,
             token TEXT NOT NULL,
             platform VARCHAR(50),
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            UNIQUE(user_id, token)
+            createdat TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updatedat TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(userid, token)
         )
     ");
 
-    // Vérifier si le token existe déjà
-    $checkTokenStmt = $pdo->prepare("SELECT id FROM push_tokens WHERE user_id = ? AND token = ?");
+    // ✅ CORRECTION : Utiliser userid au lieu de user_id
+    $checkTokenStmt = $pdo->prepare("SELECT id FROM push_tokens WHERE userid = ? AND token = ?");
     $checkTokenStmt->execute([$userId, $token]);
     
     if ($checkTokenStmt->fetch()) {
-        // Mettre à jour la date
-        $updateStmt = $pdo->prepare("UPDATE push_tokens SET updated_at = NOW(), platform = ? WHERE user_id = ? AND token = ?");
+        // ✅ CORRECTION : updatedat au lieu de updated_at
+        $updateStmt = $pdo->prepare("UPDATE push_tokens SET updatedat = NOW(), platform = ? WHERE userid = ? AND token = ?");
         $updateStmt->execute([$platform, $userId, $token]);
         
         error_log("Token updated for user $userId");
@@ -90,8 +91,8 @@ try {
             'action' => 'updated'
         ]);
     } else {
-        // Insérer le nouveau token
-        $insertStmt = $pdo->prepare("INSERT INTO push_tokens (user_id, token, platform) VALUES (?, ?, ?)");
+        // ✅ CORRECTION : userid au lieu de user_id
+        $insertStmt = $pdo->prepare("INSERT INTO push_tokens (userid, token, platform) VALUES (?, ?, ?)");
         $insertStmt->execute([$userId, $token, $platform]);
         
         error_log("Token saved for user $userId");
