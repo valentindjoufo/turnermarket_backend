@@ -4,22 +4,18 @@
  * Version avec connexion PostgreSQL via config.php
  */
 
-// 📦 Inclusion de la configuration (connexion PDO PostgreSQL)
 require_once 'config.php';
 
-// 🚦 Configuration des headers CORS
 header("Access-Control-Allow-Origin: *");
 header("Access-Control-Allow-Methods: GET, POST, PUT, DELETE, OPTIONS");
 header("Access-Control-Allow-Headers: Content-Type, Authorization, X-Requested-With");
 header("Content-Type: application/json; charset=UTF-8");
 
-// 📤 Répondre au préflight (OPTIONS) et sortir immédiatement
 if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
     http_response_code(200);
     exit;
 }
 
-// 📁 Répertoire des uploads
 define('UPLOAD_DIR', __DIR__ . '/uploads/');
 if (!is_dir(UPLOAD_DIR)) {
     mkdir(UPLOAD_DIR, 0755, true);
@@ -27,13 +23,11 @@ if (!is_dir(UPLOAD_DIR)) {
 
 $method = $_SERVER['REQUEST_METHOD'];
 
-// 📥 Utilitaire pour lire JSON depuis php://input
 function getJsonInput() {
     $data = json_decode(file_get_contents("php://input"), true);
     return is_array($data) ? $data : [];
 }
 
-// 📅 Fonction pour formater les dates pour l'affichage
 function formatDateForDisplay($dateString) {
     if (empty($dateString)) return null;
     try {
@@ -44,16 +38,36 @@ function formatDateForDisplay($dateString) {
     }
 }
 
-// 📚 GET - Récupérer les formations
+// ==================== GET ====================
 if ($method === 'GET') {
     try {
         $userId = isset($_GET['userId']) ? intval($_GET['userId']) : 0;
         $vendeurId = isset($_GET['vendeurId']) ? intval($_GET['vendeurId']) : null;
         $mode = isset($_GET['mode']) ? $_GET['mode'] : 'all';
         
-        // 👥 MODE "FOLLOWING" - Formations des comptes suivis
+        // ✅ CORRECTION : Vérifier si les tables existent avant de les utiliser
+        $tablesExist = [];
+        $checkTables = ['follow', 'venteproduit', 'vente', 'produitreaction'];
+        
+        foreach ($checkTables as $table) {
+            $stmt = $pdo->query("SELECT EXISTS (
+                SELECT FROM information_schema.tables 
+                WHERE table_schema = 'public' 
+                AND table_name = '$table'
+            )");
+            $tablesExist[$table] = $stmt->fetchColumn();
+        }
+        
+        // MODE "FOLLOWING"
         if ($mode === 'following') {
             if ($userId <= 0) {
+                echo json_encode([]);
+                exit;
+            }
+            
+            // ✅ Si la table follow n'existe pas, retourner vide
+            if (!$tablesExist['follow']) {
+                error_log("⚠️ Table 'follow' n'existe pas");
                 echo json_encode([]);
                 exit;
             }
@@ -62,40 +76,38 @@ if ($method === 'GET') {
                 SELECT p.*, 
                     u.nom as vendeur_nom, 
                     u.email as vendeur_email, 
-                    u.photoProfil as vendeur_photo,
-                    u.id as vendeurId,
-                    -- ✅ Statistiques du vendeur
+                    u.photoprofil as vendeur_photo,
+                    u.id as vendeurid,
                     (
                         SELECT COUNT(*) 
-                        FROM Follow f 
-                        WHERE f.followingId = u.id
-                    ) as nombreFollowers,
+                        FROM follow f 
+                        WHERE f.followingid = u.id
+                    ) as nombrefollowers,
                     (
                         SELECT COUNT(*) 
-                        FROM Follow f 
-                        WHERE f.followerId = u.id
-                    ) as nombreFollowing,
-                    -- ✅ État de suivi (toujours 1 dans ce mode)
-                    1 as isFollowing,
+                        FROM follow f 
+                        WHERE f.followerid = u.id
+                    ) as nombrefollowing,
+                    1 as isfollowing,
                     CASE 
                         WHEN EXISTS (
-                            SELECT 1 FROM VenteProduit vp 
-                            JOIN Vente v ON v.id = vp.venteId 
-                            WHERE vp.produitId = p.id AND v.utilisateurId = :userId AND vp.achetee = TRUE
+                            SELECT 1 FROM venteproduit vp 
+                            JOIN vente v ON v.id = vp.venteid 
+                            WHERE vp.produitid = p.id AND v.utilisateurid = :userId AND vp.achetee = TRUE
                         ) THEN 1 ELSE 0
                     END AS achetee,
                     COALESCE(r.likes, 0) AS likes,
                     COALESCE(r.pouces, 0) AS pouces,
                     CASE 
-                        WHEN p.estEnPromotion = 1 AND p.prix > 0 AND p.prixPromotion > 0 
-                        THEN ROUND(((p.prix - p.prixPromotion) / p.prix) * 100)
+                        WHEN p.estenpromotion = 1 AND p.prix > 0 AND p.prixpromotion > 0 
+                        THEN ROUND(((p.prix - p.prixpromotion) / p.prix) * 100)
                         ELSE 0
-                    END AS pourcentageReduction
-                FROM Produit p
-                LEFT JOIN Utilisateur u ON p.vendeurId = u.id
-                LEFT JOIN ProduitReaction r ON p.id = r.produitId
-                INNER JOIN Follow f ON p.vendeurId = f.followingId
-                WHERE f.followerId = :followerId
+                    END AS pourcentagereduction
+                FROM produit p
+                LEFT JOIN utilisateur u ON p.vendeurid = u.id
+                LEFT JOIN produitreaction r ON p.id = r.produitid
+                INNER JOIN follow f ON p.vendeurid = f.followingid
+                WHERE f.followerid = :followerId
                 ORDER BY p.id DESC
             ";
 
@@ -103,13 +115,12 @@ if ($method === 'GET') {
             $stmt->execute(['userId' => $userId, 'followerId' => $userId]);
             $formations = $stmt->fetchAll(PDO::FETCH_ASSOC);
             
-            // Formater les dates pour l'affichage
             foreach ($formations as &$formation) {
-                if ($formation['dateDebutPromo']) {
-                    $formation['dateDebutPromoDisplay'] = formatDateForDisplay($formation['dateDebutPromo']);
+                if ($formation['datedebutpromo']) {
+                    $formation['dateDebutPromoDisplay'] = formatDateForDisplay($formation['datedebutpromo']);
                 }
-                if ($formation['dateFinPromo']) {
-                    $formation['dateFinPromoDisplay'] = formatDateForDisplay($formation['dateFinPromo']);
+                if ($formation['datefinpromo']) {
+                    $formation['dateFinPromoDisplay'] = formatDateForDisplay($formation['datefinpromo']);
                 }
                 if ($formation['expiration']) {
                     $formation['expirationDisplay'] = formatDateForDisplay($formation['expiration']);
@@ -121,49 +132,56 @@ if ($method === 'GET') {
             exit;
         }
         
-        // 🔥 MODE "POPULAR" - Formations populaires
+        // MODE "POPULAR"
         if ($mode === 'popular') {
             $sql = "
                 SELECT p.*, 
                     u.nom as vendeur_nom, 
                     u.email as vendeur_email, 
-                    u.photoProfil as vendeur_photo,
-                    u.id as vendeurId,
-                    -- ✅ Statistiques du vendeur
+                    u.photoprofil as vendeur_photo,
+                    u.id as vendeurid,
+                    ";
+            
+            // ✅ Ajouter les statistiques follow seulement si la table existe
+            if ($tablesExist['follow']) {
+                $sql .= "
                     (
                         SELECT COUNT(*) 
-                        FROM Follow f 
-                        WHERE f.followingId = u.id
-                    ) as nombreFollowers,
+                        FROM follow f 
+                        WHERE f.followingid = u.id
+                    ) as nombrefollowers,
                     (
                         SELECT COUNT(*) 
-                        FROM Follow f 
-                        WHERE f.followerId = u.id
-                    ) as nombreFollowing,
-                    -- ✅ État de suivi
+                        FROM follow f 
+                        WHERE f.followerid = u.id
+                    ) as nombrefollowing,
                     CASE 
                         WHEN :userId > 0 AND EXISTS (
-                            SELECT 1 FROM Follow 
-                            WHERE followerId = :userId AND followingId = p.vendeurId
+                            SELECT 1 FROM follow 
+                            WHERE followerid = :userId AND followingid = p.vendeurid
                         ) THEN 1 ELSE 0
-                    END AS isFollowing,
-                    CASE 
-                        WHEN EXISTS (
-                            SELECT 1 FROM VenteProduit vp 
-                            JOIN Vente v ON v.id = vp.venteId 
-                            WHERE vp.produitId = p.id AND v.utilisateurId = :userId AND vp.achetee = TRUE
-                        ) THEN 1 ELSE 0
-                    END AS achetee,
+                    END AS isfollowing,
+                ";
+            } else {
+                $sql .= "
+                    0 as nombrefollowers,
+                    0 as nombrefollowing,
+                    0 as isfollowing,
+                ";
+            }
+            
+            $sql .= "
+                    0 AS achetee,
                     COALESCE(r.likes, 0) AS likes,
                     COALESCE(r.pouces, 0) AS pouces,
                     CASE 
-                        WHEN p.estEnPromotion = 1 AND p.prix > 0 AND p.prixPromotion > 0 
-                        THEN ROUND(((p.prix - p.prixPromotion) / p.prix) * 100)
+                        WHEN p.estenpromotion = 1 AND p.prix > 0 AND p.prixpromotion > 0 
+                        THEN ROUND(((p.prix - p.prixpromotion) / p.prix) * 100)
                         ELSE 0
-                    END AS pourcentageReduction
-                FROM Produit p
-                LEFT JOIN Utilisateur u ON p.vendeurId = u.id
-                LEFT JOIN ProduitReaction r ON p.id = r.produitId
+                    END AS pourcentagereduction
+                FROM produit p
+                LEFT JOIN utilisateur u ON p.vendeurid = u.id
+                LEFT JOIN produitreaction r ON p.id = r.produitid
                 ORDER BY (COALESCE(r.likes, 0) + COALESCE(r.pouces, 0)) DESC, p.id DESC
                 LIMIT 50
             ";
@@ -172,15 +190,14 @@ if ($method === 'GET') {
             $stmt->execute(['userId' => $userId]);
             $formations = $stmt->fetchAll(PDO::FETCH_ASSOC);
             
-            // Formater les dates pour l'affichage
             foreach ($formations as &$formation) {
-                if ($formation['dateDebutPromo']) {
-                    $formation['dateDebutPromoDisplay'] = formatDateForDisplay($formation['dateDebutPromo']);
+                if (isset($formation['datedebutpromo'])) {
+                    $formation['dateDebutPromoDisplay'] = formatDateForDisplay($formation['datedebutpromo']);
                 }
-                if ($formation['dateFinPromo']) {
-                    $formation['dateFinPromoDisplay'] = formatDateForDisplay($formation['dateFinPromo']);
+                if (isset($formation['datefinpromo'])) {
+                    $formation['dateFinPromoDisplay'] = formatDateForDisplay($formation['datefinpromo']);
                 }
-                if ($formation['expiration']) {
+                if (isset($formation['expiration'])) {
                     $formation['expirationDisplay'] = formatDateForDisplay($formation['expiration']);
                 }
             }
@@ -190,214 +207,62 @@ if ($method === 'GET') {
             exit;
         }
 
-        // 📍 Si un ID est fourni, récupérer une formation spécifique
+        // MODE "ALL" - Par défaut
+        $sql = "
+            SELECT p.*, 
+                u.nom as vendeur_nom, 
+                u.email as vendeur_email, 
+                u.photoprofil as vendeur_photo,
+                u.id as vendeurid,
+                0 as nombrefollowers,
+                0 as nombrefollowing,
+                0 as isfollowing,
+                0 AS achetee,
+                COALESCE(r.likes, 0) AS likes,
+                COALESCE(r.pouces, 0) AS pouces,
+                CASE 
+                    WHEN p.estenpromotion = 1 AND p.prix > 0 AND p.prixpromotion > 0 
+                    THEN ROUND(((p.prix - p.prixpromotion) / p.prix) * 100)
+                    ELSE 0
+                END AS pourcentagereduction
+            FROM produit p
+            LEFT JOIN utilisateur u ON p.vendeurid = u.id
+            LEFT JOIN produitreaction r ON p.id = r.produitid
+        ";
+        
+        if ($vendeurId !== null) {
+            $sql .= " WHERE p.vendeurid = :vendeurId";
+        }
+        
         if (isset($_GET['id'])) {
-            $id = intval($_GET['id']);
-            $sql = "
-                SELECT p.*, 
-                    u.nom as vendeur_nom, 
-                    u.email as vendeur_email, 
-                    u.photoProfil as vendeur_photo,
-                    u.id as vendeurId,
-                    -- ✅ Statistiques du vendeur
-                    (
-                        SELECT COUNT(*) 
-                        FROM Follow f 
-                        WHERE f.followingId = u.id
-                    ) as nombreFollowers,
-                    (
-                        SELECT COUNT(*) 
-                        FROM Follow f 
-                        WHERE f.followerId = u.id
-                    ) as nombreFollowing,
-                    -- ✅ État de suivi
-                    CASE 
-                        WHEN :userId > 0 AND EXISTS (
-                            SELECT 1 FROM Follow 
-                            WHERE followerId = :userId AND followingId = p.vendeurId
-                        ) THEN 1 ELSE 0
-                    END AS isFollowing,
-                    CASE 
-                        WHEN EXISTS (
-                            SELECT 1 FROM VenteProduit vp 
-                            JOIN Vente v ON v.id = vp.venteId 
-                            WHERE vp.produitId = p.id AND v.utilisateurId = :userId AND vp.achetee = TRUE
-                        ) THEN 1 ELSE 0
-                    END AS achetee,
-                    COALESCE(r.likes, 0) AS likes,
-                    COALESCE(r.pouces, 0) AS pouces,
-                    -- Calculer le pourcentage de réduction si en promotion
-                    CASE 
-                        WHEN p.estEnPromotion = 1 AND p.prix > 0 AND p.prixPromotion > 0 
-                        THEN ROUND(((p.prix - p.prixPromotion) / p.prix) * 100)
-                        ELSE 0
-                    END AS pourcentageReduction
-                FROM Produit p
-                LEFT JOIN Utilisateur u ON p.vendeurId = u.id
-                LEFT JOIN ProduitReaction r ON p.id = r.produitId
-                WHERE p.id = :id
-            ";
+            $sql .= " WHERE p.id = :id";
+        }
+        
+        $sql .= " ORDER BY p.id DESC";
 
-            $stmt = $pdo->prepare($sql);
-            $stmt->execute(['id' => $id, 'userId' => $userId]);
+        $stmt = $pdo->prepare($sql);
+        
+        if ($vendeurId !== null) {
+            $stmt->execute(['vendeurId' => $vendeurId]);
+        } else if (isset($_GET['id'])) {
+            $stmt->execute(['id' => intval($_GET['id'])]);
+        } else {
+            $stmt->execute();
+        }
+        
+        if (isset($_GET['id'])) {
             $formation = $stmt->fetch(PDO::FETCH_ASSOC);
-
             if (!$formation) {
                 http_response_code(404);
                 echo json_encode(['error' => 'Formation introuvable']);
                 exit;
             }
-
-            // Formater les dates pour l'affichage
-            if ($formation['dateDebutPromo']) {
-                $formation['dateDebutPromoDisplay'] = formatDateForDisplay($formation['dateDebutPromo']);
-            }
-            if ($formation['dateFinPromo']) {
-                $formation['dateFinPromoDisplay'] = formatDateForDisplay($formation['dateFinPromo']);
-            }
-            if ($formation['expiration']) {
-                $formation['expirationDisplay'] = formatDateForDisplay($formation['expiration']);
-            }
-
             echo json_encode($formation);
-            exit;
-        }
-        
-        // 👤 Si vendeurId est fourni, récupérer les formations d'un vendeur spécifique
-        elseif ($vendeurId !== null) {
-            $sql = "
-                SELECT p.*, 
-                    u.nom as vendeur_nom, 
-                    u.photoProfil as vendeur_photo,
-                    u.id as vendeurId,
-                    -- ✅ Statistiques du vendeur
-                    (
-                        SELECT COUNT(*) 
-                        FROM Follow f 
-                        WHERE f.followingId = u.id
-                    ) as nombreFollowers,
-                    (
-                        SELECT COUNT(*) 
-                        FROM Follow f 
-                        WHERE f.followerId = u.id
-                    ) as nombreFollowing,
-                    -- ✅ État de suivi
-                    CASE 
-                        WHEN :userId > 0 AND EXISTS (
-                            SELECT 1 FROM Follow 
-                            WHERE followerId = :userId AND followingId = p.vendeurId
-                        ) THEN 1 ELSE 0
-                    END AS isFollowing,
-                    CASE 
-                        WHEN EXISTS (
-                            SELECT 1 FROM VenteProduit vp 
-                            JOIN Vente v ON v.id = vp.venteId 
-                            WHERE vp.produitId = p.id AND v.utilisateurId = :userId AND vp.achetee = TRUE
-                        ) THEN 1 ELSE 0
-                    END AS achetee,
-                    COALESCE(r.likes, 0) AS likes,
-                    COALESCE(r.pouces, 0) AS pouces,
-                    -- Calculer le pourcentage de réduction si en promotion
-                    CASE 
-                        WHEN p.estEnPromotion = 1 AND p.prix > 0 AND p.prixPromotion > 0 
-                        THEN ROUND(((p.prix - p.prixPromotion) / p.prix) * 100)
-                        ELSE 0
-                    END AS pourcentageReduction
-                FROM Produit p
-                LEFT JOIN Utilisateur u ON p.vendeurId = u.id
-                LEFT JOIN ProduitReaction r ON p.id = r.produitId
-                WHERE p.vendeurId = :vendeurId
-                ORDER BY p.id DESC
-            ";
-
-            $stmt = $pdo->prepare($sql);
-            $stmt->execute(['userId' => $userId, 'vendeurId' => $vendeurId]);
-            $formations = $stmt->fetchAll(PDO::FETCH_ASSOC);
-
-            // Formater les dates pour l'affichage
-            foreach ($formations as &$formation) {
-                if ($formation['dateDebutPromo']) {
-                    $formation['dateDebutPromoDisplay'] = formatDateForDisplay($formation['dateDebutPromo']);
-                }
-                if ($formation['dateFinPromo']) {
-                    $formation['dateFinPromoDisplay'] = formatDateForDisplay($formation['dateFinPromo']);
-                }
-                if ($formation['expiration']) {
-                    $formation['expirationDisplay'] = formatDateForDisplay($formation['expiration']);
-                }
-            }
-            unset($formation);
-
-            echo json_encode($formations);
-            exit;
         } else {
-            // 📋 Récupérer toutes les formations
-            $sql = "
-                SELECT p.*, 
-                    u.nom as vendeur_nom, 
-                    u.email as vendeur_email, 
-                    u.photoProfil as vendeur_photo,
-                    u.id as vendeurId,
-                    -- ✅ Statistiques du vendeur
-                    (
-                        SELECT COUNT(*) 
-                        FROM Follow f 
-                        WHERE f.followingId = u.id
-                    ) as nombreFollowers,
-                    (
-                        SELECT COUNT(*) 
-                        FROM Follow f 
-                        WHERE f.followerId = u.id
-                    ) as nombreFollowing,
-                    -- ✅ État de suivi
-                    CASE 
-                        WHEN :userId > 0 AND EXISTS (
-                            SELECT 1 FROM Follow 
-                            WHERE followerId = :userId AND followingId = p.vendeurId
-                        ) THEN 1 ELSE 0
-                    END AS isFollowing,
-                    CASE 
-                        WHEN EXISTS (
-                            SELECT 1 FROM VenteProduit vp 
-                            JOIN Vente v ON v.id = vp.venteId 
-                            WHERE vp.produitId = p.id AND v.utilisateurId = :userId AND vp.achetee = TRUE
-                        ) THEN 1 ELSE 0
-                    END AS achetee,
-                    COALESCE(r.likes, 0) AS likes,
-                    COALESCE(r.pouces, 0) AS pouces,
-                    -- Calculer le pourcentage de réduction si en promotion
-                    CASE 
-                        WHEN p.estEnPromotion = 1 AND p.prix > 0 AND p.prixPromotion > 0 
-                        THEN ROUND(((p.prix - p.prixPromotion) / p.prix) * 100)
-                        ELSE 0
-                    END AS pourcentageReduction
-                FROM Produit p
-                LEFT JOIN Utilisateur u ON p.vendeurId = u.id
-                LEFT JOIN ProduitReaction r ON p.id = r.produitId
-                ORDER BY p.id DESC
-            ";
-
-            $stmt = $pdo->prepare($sql);
-            $stmt->execute(['userId' => $userId]);
             $formations = $stmt->fetchAll(PDO::FETCH_ASSOC);
-
-            // Formater les dates pour l'affichage
-            foreach ($formations as &$formation) {
-                if ($formation['dateDebutPromo']) {
-                    $formation['dateDebutPromoDisplay'] = formatDateForDisplay($formation['dateDebutPromo']);
-                }
-                if ($formation['dateFinPromo']) {
-                    $formation['dateFinPromoDisplay'] = formatDateForDisplay($formation['dateFinPromo']);
-                }
-                if ($formation['expiration']) {
-                    $formation['expirationDisplay'] = formatDateForDisplay($formation['expiration']);
-                }
-            }
-            unset($formation);
-
             echo json_encode($formations);
-            exit;
         }
+
     } catch (PDOException $e) {
         error_log("❌ ERREUR GET FORMATIONS: " . $e->getMessage());
         http_response_code(500);
@@ -406,7 +271,7 @@ if ($method === 'GET') {
     exit;
 }
 
-// ✏️ POST - Créer ou Modifier une formation
+
 if ($method === 'POST') {
     try {
         // 🆕 CRÉATION (POST normal)
