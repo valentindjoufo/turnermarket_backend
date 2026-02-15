@@ -153,11 +153,15 @@ try {
                 }
             }
 
-            // ✅ Formater les nombres
+            // ✅ Formater les nombres avec vérification d'existence
             $utilisateur['nombreFollowers'] = intval($utilisateur['nombreFollowers'] ?? 0);
             $utilisateur['nombreFollowing'] = intval($utilisateur['nombreFollowing'] ?? 0);
             $utilisateur['nombreFormations'] = intval($utilisateur['nombreFormations'] ?? 0);
+            $utilisateur['nombreAchats'] = intval($utilisateur['nombreAchats'] ?? 0);
+            $utilisateur['nombreCommentaires'] = intval($utilisateur['nombreCommentaires'] ?? 0);
+            $utilisateur['isFollowing'] = boolval($utilisateur['isFollowing'] ?? false);
             $utilisateur['noteVendeur'] = floatval($utilisateur['noteVendeur'] ?? 0);
+            $utilisateur['soldeVendeur'] = floatval($utilisateur['soldeVendeur'] ?? 0);
             $utilisateur['nbVentes'] = intval($utilisateur['nbVentes'] ?? 0);
 
             error_log("✅ Utilisateur récupéré - ID: $id, Nom: " . $utilisateur['nom']);
@@ -225,11 +229,12 @@ try {
                     }
                 }
 
-                $utilisateur['nombreFollowers'] = intval($utilisateur['nombreFollowers']);
-                $utilisateur['nombreFollowing'] = intval($utilisateur['nombreFollowing']);
-                $utilisateur['nombreFormations'] = intval($utilisateur['nombreFormations']);
-                $utilisateur['noteVendeur'] = floatval($utilisateur['noteVendeur']);
-                $utilisateur['nbVentes'] = intval($utilisateur['nbVentes']);
+                // ✅ CORRECTION : Ajout de ?? 0 pour éviter les avertissements
+                $utilisateur['nombreFollowers'] = intval($utilisateur['nombreFollowers'] ?? 0);
+                $utilisateur['nombreFollowing'] = intval($utilisateur['nombreFollowing'] ?? 0);
+                $utilisateur['nombreFormations'] = intval($utilisateur['nombreFormations'] ?? 0);
+                $utilisateur['noteVendeur'] = floatval($utilisateur['noteVendeur'] ?? 0);
+                $utilisateur['nbVentes'] = intval($utilisateur['nbVentes'] ?? 0);
 
                 return $utilisateur;
             }, $utilisateurs);
@@ -318,7 +323,7 @@ try {
             }
         }
 
-        // 🔁 ACTIVATION/DÉSACTIVATION (inchangé)
+        // 🔁 ACTIVATION/DÉSACTIVATION
         elseif (isset($data['etat']) && isset($data['id'])) {
             $id = intval($data['id']);
             $etat = trim($data['etat']);
