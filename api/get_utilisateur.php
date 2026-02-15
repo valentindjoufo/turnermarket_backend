@@ -35,14 +35,16 @@ $s3Client = new S3Client([
 ]);
 
 // Fonction pour envoyer une réponse JSON standardisée
-function sendJsonResponse($data, $statusCode = 200) {
+function sendJsonResponse($data, $statusCode = 200)
+{
     http_response_code($statusCode);
     echo json_encode($data, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
     exit();
 }
 
 // Fonction pour valider et décoder les données JSON
-function getJsonInput() {
+function getJsonInput()
+{
     $input = file_get_contents("php://input");
     if (empty($input)) {
         return [];
@@ -135,7 +137,7 @@ try {
             }
 
             // Nettoyer les valeurs nulles
-            $utilisateur = array_map(function($value) {
+            $utilisateur = array_map(function ($value) {
                 return $value === null ? '' : $value;
             }, $utilisateur);
 
@@ -152,15 +154,11 @@ try {
             }
 
             // ✅ Formater les nombres
-            $utilisateur['nombreFollowers'] = intval($utilisateur['nombreFollowers']);
-            $utilisateur['nombreFollowing'] = intval($utilisateur['nombreFollowing']);
-            $utilisateur['nombreFormations'] = intval($utilisateur['nombreFormations']);
-            $utilisateur['nombreAchats'] = intval($utilisateur['nombreAchats']);
-            $utilisateur['nombreCommentaires'] = intval($utilisateur['nombreCommentaires']);
-            $utilisateur['isFollowing'] = boolval($utilisateur['isFollowing']);
-            $utilisateur['noteVendeur'] = floatval($utilisateur['noteVendeur']);
-            $utilisateur['soldeVendeur'] = floatval($utilisateur['soldeVendeur']);
-            $utilisateur['nbVentes'] = intval($utilisateur['nbVentes']);
+            $utilisateur['nombreFollowers'] = intval($utilisateur['nombreFollowers'] ?? 0);
+            $utilisateur['nombreFollowing'] = intval($utilisateur['nombreFollowing'] ?? 0);
+            $utilisateur['nombreFormations'] = intval($utilisateur['nombreFormations'] ?? 0);
+            $utilisateur['noteVendeur'] = floatval($utilisateur['noteVendeur'] ?? 0);
+            $utilisateur['nbVentes'] = intval($utilisateur['nbVentes'] ?? 0);
 
             error_log("✅ Utilisateur récupéré - ID: $id, Nom: " . $utilisateur['nom']);
 
@@ -211,8 +209,8 @@ try {
 
             error_log("✅ Liste utilisateurs récupérée - Total: " . count($utilisateurs));
 
-            $utilisateurs = array_map(function($utilisateur) {
-                $utilisateur = array_map(function($value) {
+            $utilisateurs = array_map(function ($utilisateur) {
+                $utilisateur = array_map(function ($value) {
                     return $value === null ? '' : $value;
                 }, $utilisateur);
 
@@ -252,7 +250,7 @@ try {
         // 🆕 CRÉATION d'un nouvel utilisateur
         if (isset($data['action']) && $data['action'] === 'creer') {
             error_log("🆕 Création d'un nouvel utilisateur");
-            
+
             $champsRequis = ['matricule', 'nom', 'email', 'telephone', 'role'];
             foreach ($champsRequis as $champ) {
                 if (!isset($data[$champ]) || empty(trim($data[$champ]))) {
@@ -293,17 +291,23 @@ try {
                  nombreFollowers, nombreFollowing, noteVendeur, soldeVendeur, nbVentes, statutVendeur) 
                 VALUES (?, ?, ?, ?, ?, ?, ?, 'actif', NULL, NULL, 0, 0, 0, 0, 0, 'nouveau')
             ");
-            
+
             $success = $stmt->execute([
-                $matricule, $nom, $sexe, $nationalite, $telephone, $email, $role
+                $matricule,
+                $nom,
+                $sexe,
+                $nationalite,
+                $telephone,
+                $email,
+                $role
             ]);
 
             if ($success) {
                 $newId = $pdo->lastInsertId();
                 error_log("✅ Utilisateur créé avec succès - ID: $newId, Nom: $nom");
-                
+
                 sendJsonResponse([
-                    'success' => true, 
+                    'success' => true,
                     'message' => 'Utilisateur créé avec succès',
                     'id' => $newId,
                     'timestamp' => date('Y-m-d H:i:s')
@@ -313,12 +317,12 @@ try {
                 sendJsonResponse(['success' => false, 'error' => 'Erreur lors de la création'], 500);
             }
         }
-        
+
         // 🔁 ACTIVATION/DÉSACTIVATION (inchangé)
         elseif (isset($data['etat']) && isset($data['id'])) {
             $id = intval($data['id']);
             $etat = trim($data['etat']);
-            
+
             if ($id <= 0) {
                 sendJsonResponse(['success' => false, 'error' => 'ID utilisateur invalide'], 400);
             }
@@ -332,7 +336,7 @@ try {
             if ($success && $stmt->rowCount() > 0) {
                 error_log("✅ État utilisateur mis à jour - ID: $id, État: $etat");
                 sendJsonResponse([
-                    'success' => true, 
+                    'success' => true,
                     'message' => "État mis à jour en '$etat'",
                     'timestamp' => date('Y-m-d H:i:s')
                 ]);
@@ -340,7 +344,7 @@ try {
                 sendJsonResponse(['success' => false, 'error' => "Utilisateur non trouvé ou pas de changement"], 404);
             }
         }
-        
+
         // ❌ SUPPRESSION (via action POST)
         elseif (isset($data['action']) && $data['action'] === 'supprimer' && isset($data['id'])) {
             $id = intval($data['id']);
@@ -358,7 +362,7 @@ try {
                 try {
                     $s3Client->deleteObject([
                         'Bucket' => CLOUDFLARE_BUCKET,
-                        'Key'    => $utilisateur['photo_key']
+                        'Key' => $utilisateur['photo_key']
                     ]);
                     error_log("✅ Photo R2 supprimée: " . $utilisateur['photo_key']);
                 } catch (AwsException $e) {
@@ -373,20 +377,18 @@ try {
             if ($success && $stmt->rowCount() > 0) {
                 error_log("✅ Utilisateur supprimé - ID: $id");
                 sendJsonResponse([
-                    'success' => true, 
+                    'success' => true,
                     'message' => "Utilisateur supprimé avec succès",
                     'timestamp' => date('Y-m-d H:i:s')
                 ]);
             } else {
                 sendJsonResponse(['success' => false, 'error' => "Utilisateur non trouvé"], 404);
             }
-        }
-        
-        else {
+        } else {
             sendJsonResponse(['success' => false, 'error' => "Action invalide ou paramètres manquants"], 400);
         }
     }
-    
+
     // ==================== PUT : MODIFICATION (sans photo) ====================
     elseif ($_SERVER['REQUEST_METHOD'] === 'PUT') {
         $data = getJsonInput();
@@ -434,8 +436,19 @@ try {
 
         // Champs modifiables (sans photo, gérée ailleurs)
         $champsModifiables = [
-            'matricule', 'nom', 'sexe', 'nationalite', 'telephone', 'email', 'role',
-            'nombreFollowers', 'nombreFollowing', 'noteVendeur', 'soldeVendeur', 'nbVentes', 'statutVendeur'
+            'matricule',
+            'nom',
+            'sexe',
+            'nationalite',
+            'telephone',
+            'email',
+            'role',
+            'nombreFollowers',
+            'nombreFollowing',
+            'noteVendeur',
+            'soldeVendeur',
+            'nbVentes',
+            'statutVendeur'
         ];
         $updates = [];
         $params = [];
@@ -465,7 +478,7 @@ try {
         if ($success) {
             error_log("✅ Utilisateur mis à jour - ID: $id");
             sendJsonResponse([
-                'success' => true, 
+                'success' => true,
                 'message' => 'Utilisateur mis à jour avec succès',
                 'timestamp' => date('Y-m-d H:i:s')
             ]);
@@ -473,7 +486,7 @@ try {
             sendJsonResponse(['success' => false, 'error' => 'Erreur lors de la mise à jour'], 500);
         }
     }
-    
+
     // ==================== DELETE : SUPPRESSION (par GET) ====================
     elseif ($_SERVER['REQUEST_METHOD'] === 'DELETE') {
         if (!isset($_GET['id'])) {
@@ -495,7 +508,7 @@ try {
             try {
                 $s3Client->deleteObject([
                     'Bucket' => CLOUDFLARE_BUCKET,
-                    'Key'    => $utilisateur['photo_key']
+                    'Key' => $utilisateur['photo_key']
                 ]);
                 error_log("✅ Photo R2 supprimée: " . $utilisateur['photo_key']);
             } catch (AwsException $e) {
@@ -510,23 +523,21 @@ try {
         if ($success && $stmt->rowCount() > 0) {
             error_log("✅ Utilisateur supprimé - ID: $id");
             sendJsonResponse([
-                'success' => true, 
+                'success' => true,
                 'message' => "Utilisateur supprimé avec succès",
                 'timestamp' => date('Y-m-d H:i:s')
             ]);
         } else {
             sendJsonResponse(['success' => false, 'error' => "Utilisateur non trouvé"], 404);
         }
-    }
-    
-    else {
+    } else {
         sendJsonResponse(['success' => false, 'error' => 'Méthode non autorisée'], 405);
     }
-    
+
 } catch (PDOException $e) {
     error_log("❌ ERREUR PDO GESTION UTILISATEURS: " . $e->getMessage());
     sendJsonResponse([
-        'success' => false, 
+        'success' => false,
         'error' => 'Erreur de base de données',
         'debug' => $e->getMessage(),
         'timestamp' => date('Y-m-d H:i:s')
@@ -534,7 +545,7 @@ try {
 } catch (Exception $e) {
     error_log("❌ ERREUR GÉNÉRALE GESTION UTILISATEURS: " . $e->getMessage());
     sendJsonResponse([
-        'success' => false, 
+        'success' => false,
         'error' => 'Erreur interne du serveur',
         'timestamp' => date('Y-m-d H:i:s')
     ], 500);
