@@ -5,13 +5,20 @@ FROM php:8.2-apache
 
 # ==========================================
 # Installation des dépendances système requises
-# pour PostgreSQL (OBLIGATOIRE)
+# pour PostgreSQL et Composer
 # ==========================================
 RUN apt-get update && apt-get install -y \
     libpq-dev \
+    git \
+    unzip \
     && docker-php-ext-install pdo pdo_pgsql pgsql \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
+
+# ==========================================
+# Installation de Composer
+# ==========================================
+COPY --from=composer:latest /usr/bin/composer /usr/bin/composer
 
 # ==========================================
 # Activation des modules Apache nécessaires
@@ -24,9 +31,25 @@ RUN a2enmod rewrite headers
 RUN sed -i 's/AllowOverride None/AllowOverride All/g' /etc/apache2/apache2.conf
 
 # ==========================================
-# Copie du projet dans le conteneur
+# Définir le répertoire de travail
 # ==========================================
-COPY . /var/www/html/
+WORKDIR /var/www/html
+
+# ==========================================
+# Copier d'abord les fichiers de configuration Composer
+# (optimisation pour le cache Docker)
+# ==========================================
+COPY composer.json composer.lock* ./
+
+# ==========================================
+# Installer les dépendances PHP avec Composer
+# ==========================================
+RUN composer install --no-dev --optimize-autoloader
+
+# ==========================================
+# Copier tout le reste du projet
+# ==========================================
+COPY . .
 
 # ==========================================
 # Permissions correctes pour Apache
