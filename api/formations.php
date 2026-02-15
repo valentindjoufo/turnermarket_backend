@@ -99,7 +99,7 @@ if ($method === 'GET') {
                     COALESCE(r.likes, 0) AS likes,
                     COALESCE(r.pouces, 0) AS pouces,
                     CASE 
-                        WHEN p.estenpromotion = 1 AND p.prix > 0 AND p.prixpromotion > 0 
+                        WHEN p.estenpromotion = TRUE AND p.prix > 0 AND p.prixpromotion > 0 
                         THEN ROUND(((p.prix - p.prixpromotion) / p.prix) * 100)
                         ELSE 0
                     END AS pourcentagereduction
@@ -175,7 +175,7 @@ if ($method === 'GET') {
                     COALESCE(r.likes, 0) AS likes,
                     COALESCE(r.pouces, 0) AS pouces,
                     CASE 
-                        WHEN p.estenpromotion = 1 AND p.prix > 0 AND p.prixpromotion > 0 
+                        WHEN p.estenpromotion = TRUE AND p.prix > 0 AND p.prixpromotion > 0 
                         THEN ROUND(((p.prix - p.prixpromotion) / p.prix) * 100)
                         ELSE 0
                     END AS pourcentagereduction
@@ -221,7 +221,7 @@ if ($method === 'GET') {
                 COALESCE(r.likes, 0) AS likes,
                 COALESCE(r.pouces, 0) AS pouces,
                 CASE 
-                    WHEN p.estenpromotion = 1 AND p.prix > 0 AND p.prixpromotion > 0 
+                    WHEN p.estenpromotion = TRUE AND p.prix > 0 AND p.prixpromotion > 0 
                     THEN ROUND(((p.prix - p.prixpromotion) / p.prix) * 100)
                     ELSE 0
                 END AS pourcentagereduction
@@ -464,10 +464,10 @@ if ($method === 'POST') {
                         exit;
                     }
                 } catch (Exception $e) {
-                    http_response_code(400);
-                    echo json_encode(['error' => 'Format de date invalide']);
-                    exit;
-                }
+                        http_response_code(400);
+                        echo json_encode(['error' => 'Format de date invalide']);
+                        exit;
+                    }
             }
 
             if (!$expiration) {
