@@ -1,13 +1,11 @@
 <?php
 /**
  * get_notifications.php - Récupérer les notifications d'un utilisateur
- * Version avec connexion PostgreSQL via config.php
+ * Version compatible PostgreSQL (noms en minuscules)
  */
 
-// 📦 Inclusion de la configuration (connexion PDO PostgreSQL)
 require_once 'config.php';
 
-// 🚦 Configuration des headers CORS
 header("Access-Control-Allow-Origin: *");
 header("Access-Control-Allow-Methods: GET, POST, OPTIONS, PUT, DELETE");
 header("Access-Control-Allow-Headers: Content-Type, Authorization, ngrok-skip-browser-warning, X-Requested-With");
@@ -19,17 +17,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
 }
 
 try {
-    // 💾 Vérification que la connexion PDO est bien disponible
     if (!isset($pdo) || !($pdo instanceof PDO)) {
         throw new Exception("Connexion à la base de données non disponible");
     }
 
-    // 📥 Récupérer et valider l'ID utilisateur
     $userId = $_GET['userId'] ?? null;
-    
     if (!$userId || !filter_var($userId, FILTER_VALIDATE_INT)) {
         error_log("❌ User ID invalide ou manquant: " . $userId);
-        
         http_response_code(400);
         echo json_encode([
             "success" => false,
@@ -42,7 +36,7 @@ try {
     $userId = intval($userId);
     error_log("🔍 Récupération notifications pour utilisateur ID: $userId");
 
-    // 📨 Récupérer les notifications
+    // Requête avec noms en minuscules (PostgreSQL)
     $stmt = $pdo->prepare("
         SELECT 
             id,
@@ -50,12 +44,12 @@ try {
             message,
             type,
             lien,
-            estLu,
-            utilisateurId,
-            dateCreation
-        FROM Notification 
-        WHERE utilisateurId = ? 
-        ORDER BY dateCreation DESC
+            estlu,          -- colonne en minuscules
+            utilisateurid,  -- colonne en minuscules
+            datecreation    -- colonne en minuscules
+        FROM notification 
+        WHERE utilisateurid = ? 
+        ORDER BY datecreation DESC
         LIMIT 50
     ");
     $stmt->execute([$userId]);
@@ -63,29 +57,28 @@ try {
 
     error_log("✅ Notifications récupérées: " . count($notifications) . " pour utilisateur $userId");
 
-    // 📋 Formater les types de données correctement
     $formattedNotifications = [];
     $nonLues = 0;
-    
+
     foreach ($notifications as $notif) {
+        // Les clés sont en minuscules, on les mappe vers camelCase pour la sortie
         $formattedNotifications[] = [
             'id' => (int)$notif['id'],
             'titre' => $notif['titre'],
             'message' => $notif['message'],
             'type' => $notif['type'],
             'lien' => $notif['lien'],
-            'estLu' => (bool)$notif['estLu'],
-            'utilisateurId' => (int)$notif['utilisateurId'],
-            'dateCreation' => $notif['dateCreation'],
-            'dateCreationDisplay' => date('d/m/Y H:i', strtotime($notif['dateCreation']))
+            'estLu' => (bool)$notif['estlu'],
+            'utilisateurId' => (int)$notif['utilisateurid'],
+            'dateCreation' => $notif['datecreation'],
+            'dateCreationDisplay' => date('d/m/Y H:i', strtotime($notif['datecreation']))
         ];
-        
-        if (!$notif['estLu']) {
+
+        if (!$notif['estlu']) {
             $nonLues++;
         }
     }
 
-    // 📤 Formater la réponse JSON
     echo json_encode([
         "success" => true,
         "notifications" => $formattedNotifications,
@@ -96,9 +89,7 @@ try {
     ], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
 
 } catch (PDOException $e) {
-    // ❌ Erreur de base de données
     error_log("❌ ERREUR PDO GET_NOTIFICATIONS: " . $e->getMessage());
-    
     http_response_code(500);
     echo json_encode([
         "success" => false,
@@ -108,9 +99,7 @@ try {
     ], JSON_UNESCAPED_UNICODE);
     
 } catch (Exception $e) {
-    // ❌ Autres erreurs
     error_log("❌ ERREUR GET_NOTIFICATIONS: " . $e->getMessage());
-    
     http_response_code(400);
     echo json_encode([
         "success" => false,

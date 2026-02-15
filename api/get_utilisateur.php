@@ -1,26 +1,38 @@
 <?php
 /**
  * gestion_utilisateurs.php - CRUD complet pour les utilisateurs
- * Version avec connexion PostgreSQL via config.php
+ * Version avec intégration Cloudflare R2 pour les photos de profil
  */
 
-// 📦 Inclusion de la configuration (connexion PDO PostgreSQL)
 require_once 'config.php';
+require_once __DIR__ . '/../vendor/autoload.php';
+require_once __DIR__ . '/cloudflare-config.php';
 
-// 🚦 Configuration CORS
+use Aws\S3\S3Client;
+use Aws\Exception\AwsException;
+
 header("Access-Control-Allow-Origin: *");
 header("Access-Control-Allow-Headers: Content-Type, Authorization");
 header("Access-Control-Allow-Methods: GET, POST, PUT, DELETE, OPTIONS");
 header("Content-Type: application/json; charset=UTF-8");
 
-// ✅ Gestion pré-vol OPTIONS
 if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
     http_response_code(200);
     exit();
 }
 
-// ✅ CORRIGÉ : Configuration de l'URL de base pour les photos
-define('BASE_URL', '/api/');  // ✅ Chemin relatif - fonctionne avec ngrok ET localhost
+// ✅ Initialisation du client R2 (utile pour les suppressions)
+$s3Client = new S3Client([
+    'region' => CLOUDFLARE_REGION,
+    'version' => 'latest',
+    'endpoint' => CLOUDFLARE_ENDPOINT,
+    'credentials' => [
+        'key' => CLOUDFLARE_ACCESS_KEY,
+        'secret' => CLOUDFLARE_SECRET_KEY,
+    ],
+    'use_path_style_endpoint' => true,
+    'signature_version' => 'v4',
+]);
 
 // Fonction pour envoyer une réponse JSON standardisée
 function sendJsonResponse($data, $statusCode = 200) {
@@ -35,36 +47,28 @@ function getJsonInput() {
     if (empty($input)) {
         return [];
     }
-    
     $data = json_decode($input, true);
-    
     if (json_last_error() !== JSON_ERROR_NONE) {
         sendJsonResponse(['success' => false, 'error' => 'Format JSON invalide: ' . json_last_error_msg()], 400);
     }
-    
     return $data ?: [];
 }
 
 try {
-    // 💾 Vérification que la connexion PDO est bien disponible
     if (!isset($pdo) || !($pdo instanceof PDO)) {
         throw new Exception("Connexion à la base de données non disponible");
     }
 
     // ==================== GET : RÉCUPÉRATION ====================
     if ($_SERVER['REQUEST_METHOD'] === 'GET') {
-        
-        // ✅ GET avec id : un seul utilisateur AVEC VRAIS COMPTEURS
         if (isset($_GET['id'])) {
             $id = intval($_GET['id']);
             if ($id <= 0) {
                 sendJsonResponse(['success' => false, 'error' => 'ID utilisateur invalide'], 400);
             }
-            
-            // 🆕 PARAMÈTRE OPTIONNEL : currentUserId pour vérifier si on suit cet utilisateur
             $currentUserId = isset($_GET['currentUserId']) ? intval($_GET['currentUserId']) : 0;
-            
-            // ✅ CORRIGÉ : REQUÊTE AVEC VRAIS COMPTEURS CALCULÉS EN DIRECT
+
+            // ✅ On inclut désormais photo_key dans la sélection
             $stmt = $pdo->prepare("
                 SELECT 
                     u.id, 
@@ -77,8 +81,8 @@ try {
                     u.role, 
                     u.etat, 
                     u.photoProfil, 
+                    u.photo_key,
                     u.dateCreation,
-                    -- ✅ COMPTEURS EXACTS (calculés en direct depuis la table Follow)
                     (
                         SELECT COUNT(*) 
                         FROM Follow f 
@@ -89,14 +93,13 @@ try {
                         FROM Follow f 
                         WHERE f.followerId = u.id
                     ) as nombreFollowing,
-                    u.noteVendeur,          -- Note du vendeur
-                    u.soldeVendeur,         -- Solde vendeur
-                    u.nbVentes,             -- Nombre de ventes
-                    u.statutVendeur,        -- Statut vendeur
-                    u.identiteVerifiee,     -- Identité vérifiée
-                    u.emailVerifie,         -- Email vérifié
-                    u.telephoneVerifie,     -- Téléphone vérifié
-                    -- ✅ Statistiques complémentaires
+                    u.noteVendeur,
+                    u.soldeVendeur,
+                    u.nbVentes,
+                    u.statutVendeur,
+                    u.identiteVerifiee,
+                    u.emailVerifie,
+                    u.telephoneVerifie,
                     (
                         SELECT COUNT(*) 
                         FROM Produit 
@@ -112,7 +115,6 @@ try {
                         FROM Commentaire 
                         WHERE utilisateurId = u.id
                     ) as nombreCommentaires,
-                    -- ✅ Vérifier si l'utilisateur connecté suit cet utilisateur
                     CASE 
                         WHEN ? > 0 AND EXISTS (
                             SELECT 1 
@@ -132,26 +134,24 @@ try {
                 sendJsonResponse(['success' => false, 'error' => 'Utilisateur non trouvé'], 404);
             }
 
-            // Nettoyer et formater les données
+            // Nettoyer les valeurs nulles
             $utilisateur = array_map(function($value) {
                 return $value === null ? '' : $value;
             }, $utilisateur);
 
-            // ✅ CORRIGÉ : Ajouter l'URL relative de la photo
-            if (!empty($utilisateur['photoProfil'])) {
-                $filePath = __DIR__ . '/' . $utilisateur['photoProfil'];
-                if (file_exists($filePath)) {
-                    // Retourner le chemin relatif
-                    $utilisateur['photoProfilUrl'] = BASE_URL . $utilisateur['photoProfil'];
+            // ✅ Construction de l'URL publique à partir de la clé R2
+            if (!empty($utilisateur['photo_key'])) {
+                $utilisateur['photoProfilUrl'] = generateCloudflareUrl($utilisateur['photo_key']);
+            } else {
+                // Fallback : si photoProfil contient déjà une URL (ancien système)
+                if (!empty($utilisateur['photoProfil']) && preg_match('/^https?:\/\//', $utilisateur['photoProfil'])) {
+                    $utilisateur['photoProfilUrl'] = $utilisateur['photoProfil'];
                 } else {
                     $utilisateur['photoProfilUrl'] = null;
-                    $utilisateur['photoProfil'] = null;
                 }
-            } else {
-                $utilisateur['photoProfilUrl'] = null;
             }
-            
-            // ✅ Formater les nombres correctement
+
+            // ✅ Formater les nombres
             $utilisateur['nombreFollowers'] = intval($utilisateur['nombreFollowers']);
             $utilisateur['nombreFollowing'] = intval($utilisateur['nombreFollowing']);
             $utilisateur['nombreFormations'] = intval($utilisateur['nombreFormations']);
@@ -164,7 +164,6 @@ try {
 
             error_log("✅ Utilisateur récupéré - ID: $id, Nom: " . $utilisateur['nom']);
 
-            // ✅ Retourner encapsulé dans 'utilisateur'
             sendJsonResponse([
                 'success' => true,
                 'utilisateur' => $utilisateur,
@@ -172,7 +171,7 @@ try {
             ]);
 
         } else {
-            // ✅ GET sans id : liste des utilisateurs AVEC VRAIS COMPTEURS
+            // Liste des utilisateurs
             $stmt = $pdo->query("
                 SELECT 
                     u.id, 
@@ -185,8 +184,8 @@ try {
                     u.role, 
                     u.etat, 
                     u.photoProfil, 
+                    u.photo_key,
                     u.dateCreation,
-                    -- ✅ COMPTEURS EXACTS pour la liste aussi
                     (
                         SELECT COUNT(*) 
                         FROM Follow f 
@@ -212,32 +211,28 @@ try {
 
             error_log("✅ Liste utilisateurs récupérée - Total: " . count($utilisateurs));
 
-            // Nettoyer et formater les données
             $utilisateurs = array_map(function($utilisateur) {
                 $utilisateur = array_map(function($value) {
                     return $value === null ? '' : $value;
                 }, $utilisateur);
-                
-                // ✅ CORRIGÉ : Ajouter les URLs relatives pour toutes les photos
-                if (!empty($utilisateur['photoProfil'])) {
-                    $filePath = __DIR__ . '/' . $utilisateur['photoProfil'];
-                    if (file_exists($filePath)) {
-                        $utilisateur['photoProfilUrl'] = BASE_URL . $utilisateur['photoProfil'];
+
+                // ✅ Construction de l'URL publique
+                if (!empty($utilisateur['photo_key'])) {
+                    $utilisateur['photoProfilUrl'] = generateCloudflareUrl($utilisateur['photo_key']);
+                } else {
+                    if (!empty($utilisateur['photoProfil']) && preg_match('/^https?:\/\//', $utilisateur['photoProfil'])) {
+                        $utilisateur['photoProfilUrl'] = $utilisateur['photoProfil'];
                     } else {
                         $utilisateur['photoProfilUrl'] = null;
-                        $utilisateur['photoProfil'] = null;
                     }
-                } else {
-                    $utilisateur['photoProfilUrl'] = null;
                 }
-                
-                // ✅ Formater les nombres
+
                 $utilisateur['nombreFollowers'] = intval($utilisateur['nombreFollowers']);
                 $utilisateur['nombreFollowing'] = intval($utilisateur['nombreFollowing']);
                 $utilisateur['nombreFormations'] = intval($utilisateur['nombreFormations']);
                 $utilisateur['noteVendeur'] = floatval($utilisateur['noteVendeur']);
                 $utilisateur['nbVentes'] = intval($utilisateur['nbVentes']);
-                
+
                 return $utilisateur;
             }, $utilisateurs);
 
@@ -249,8 +244,8 @@ try {
             ]);
         }
     }
-    
-    // ==================== POST : CRÉATION ====================
+
+    // ==================== POST : CRÉATION / ACTIONS ====================
     elseif ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $data = getJsonInput();
 
@@ -258,7 +253,6 @@ try {
         if (isset($data['action']) && $data['action'] === 'creer') {
             error_log("🆕 Création d'un nouvel utilisateur");
             
-            // Validation des champs requis
             $champsRequis = ['matricule', 'nom', 'email', 'telephone', 'role'];
             foreach ($champsRequis as $champ) {
                 if (!isset($data[$champ]) || empty(trim($data[$champ]))) {
@@ -266,7 +260,6 @@ try {
                 }
             }
 
-            // Nettoyer les données
             $matricule = trim($data['matricule']);
             $nom = trim($data['nom']);
             $email = trim($data['email']);
@@ -275,41 +268,34 @@ try {
             $sexe = isset($data['sexe']) ? trim($data['sexe']) : 'Non spécifié';
             $nationalite = isset($data['nationalite']) ? trim($data['nationalite']) : 'Non spécifié';
 
-            // Validation email
             if (!filter_var($email, FILTER_VALIDATE_EMAIL)) {
                 sendJsonResponse(['success' => false, 'error' => 'Format d\'email invalide'], 400);
             }
 
-            // Vérifier si l'email existe déjà
+            // Vérifier unicité email
             $stmt = $pdo->prepare("SELECT id FROM Utilisateur WHERE email = ?");
             $stmt->execute([$email]);
             if ($stmt->fetch()) {
                 sendJsonResponse(['success' => false, 'error' => 'Cet email est déjà utilisé'], 409);
             }
 
-            // Vérifier si le matricule existe déjà
+            // Vérifier unicité matricule
             $stmt = $pdo->prepare("SELECT id FROM Utilisateur WHERE matricule = ?");
             $stmt->execute([$matricule]);
             if ($stmt->fetch()) {
                 sendJsonResponse(['success' => false, 'error' => 'Ce matricule est déjà utilisé'], 409);
             }
 
-            // Insertion du nouvel utilisateur
+            // Insertion (sans photo)
             $stmt = $pdo->prepare("
                 INSERT INTO Utilisateur 
-                (matricule, nom, sexe, nationalite, telephone, email, role, etat, photoProfil,
+                (matricule, nom, sexe, nationalite, telephone, email, role, etat, photoProfil, photo_key,
                  nombreFollowers, nombreFollowing, noteVendeur, soldeVendeur, nbVentes, statutVendeur) 
-                VALUES (?, ?, ?, ?, ?, ?, ?, 'actif', NULL, 0, 0, 0, 0, 0, 'nouveau')
+                VALUES (?, ?, ?, ?, ?, ?, ?, 'actif', NULL, NULL, 0, 0, 0, 0, 0, 'nouveau')
             ");
             
             $success = $stmt->execute([
-                $matricule,
-                $nom,
-                $sexe,
-                $nationalite,
-                $telephone,
-                $email,
-                $role
+                $matricule, $nom, $sexe, $nationalite, $telephone, $email, $role
             ]);
 
             if ($success) {
@@ -324,11 +310,11 @@ try {
                 ]);
             } else {
                 error_log("❌ Erreur lors de la création de l'utilisateur");
-                sendJsonResponse(['success' => false, 'error' => 'Erreur lors de la création de l\'utilisateur'], 500);
+                sendJsonResponse(['success' => false, 'error' => 'Erreur lors de la création'], 500);
             }
         }
         
-        // 🔁 ACTIVATION/DÉSACTIVATION
+        // 🔁 ACTIVATION/DÉSACTIVATION (inchangé)
         elseif (isset($data['etat']) && isset($data['id'])) {
             $id = intval($data['id']);
             $etat = trim($data['etat']);
@@ -336,7 +322,6 @@ try {
             if ($id <= 0) {
                 sendJsonResponse(['success' => false, 'error' => 'ID utilisateur invalide'], 400);
             }
-            
             if (!in_array($etat, ['actif', 'inactif'])) {
                 sendJsonResponse(['success' => false, 'error' => "Valeur de 'etat' invalide"], 400);
             }
@@ -352,30 +337,32 @@ try {
                     'timestamp' => date('Y-m-d H:i:s')
                 ]);
             } else {
-                error_log("⚠️ Utilisateur non trouvé ou pas de changement - ID: $id");
                 sendJsonResponse(['success' => false, 'error' => "Utilisateur non trouvé ou pas de changement"], 404);
             }
         }
         
-        // ❌ SUPPRESSION
+        // ❌ SUPPRESSION (via action POST)
         elseif (isset($data['action']) && $data['action'] === 'supprimer' && isset($data['id'])) {
             $id = intval($data['id']);
-            
             if ($id <= 0) {
                 sendJsonResponse(['success' => false, 'error' => 'ID utilisateur invalide'], 400);
             }
 
-            // Récupérer la photo avant suppression
-            $stmt = $pdo->prepare("SELECT photoProfil FROM Utilisateur WHERE id = ?");
+            // Récupérer photo_key avant suppression
+            $stmt = $pdo->prepare("SELECT photo_key FROM Utilisateur WHERE id = ?");
             $stmt->execute([$id]);
             $utilisateur = $stmt->fetch(PDO::FETCH_ASSOC);
 
-            // Supprimer le fichier photo s'il existe
-            if ($utilisateur && !empty($utilisateur['photoProfil'])) {
-                $filePath = __DIR__ . '/' . $utilisateur['photoProfil'];
-                if (file_exists($filePath)) {
-                    unlink($filePath);
-                    error_log("🗑️ Photo utilisateur supprimée - Chemin: $filePath");
+            // Supprimer la photo de R2 si elle existe
+            if ($utilisateur && !empty($utilisateur['photo_key'])) {
+                try {
+                    $s3Client->deleteObject([
+                        'Bucket' => CLOUDFLARE_BUCKET,
+                        'Key'    => $utilisateur['photo_key']
+                    ]);
+                    error_log("✅ Photo R2 supprimée: " . $utilisateur['photo_key']);
+                } catch (AwsException $e) {
+                    error_log("⚠️ Erreur suppression R2: " . $e->getMessage());
                 }
             }
 
@@ -391,7 +378,6 @@ try {
                     'timestamp' => date('Y-m-d H:i:s')
                 ]);
             } else {
-                error_log("❌ Utilisateur non trouvé pour suppression - ID: $id");
                 sendJsonResponse(['success' => false, 'error' => "Utilisateur non trouvé"], 404);
             }
         }
@@ -401,7 +387,7 @@ try {
         }
     }
     
-    // ==================== PUT : MODIFICATION ====================
+    // ==================== PUT : MODIFICATION (sans photo) ====================
     elseif ($_SERVER['REQUEST_METHOD'] === 'PUT') {
         $data = getJsonInput();
 
@@ -423,14 +409,12 @@ try {
             sendJsonResponse(['success' => false, 'error' => 'Utilisateur non trouvé'], 404);
         }
 
-        // Vérifier l'unicité de l'email si modifié
+        // Vérifier unicité email si modifié
         if (isset($data['email']) && $data['email'] !== $utilisateurExistant['email']) {
             $email = trim($data['email']);
-            
             if (!filter_var($email, FILTER_VALIDATE_EMAIL)) {
                 sendJsonResponse(['success' => false, 'error' => 'Format d\'email invalide'], 400);
             }
-            
             $stmt = $pdo->prepare("SELECT id FROM Utilisateur WHERE email = ? AND id != ?");
             $stmt->execute([$email, $id]);
             if ($stmt->fetch()) {
@@ -438,7 +422,7 @@ try {
             }
         }
 
-        // Vérifier l'unicité du matricule si modifié
+        // Vérifier unicité matricule si modifié
         if (isset($data['matricule']) && $data['matricule'] !== $utilisateurExistant['matricule']) {
             $matricule = trim($data['matricule']);
             $stmt = $pdo->prepare("SELECT id FROM Utilisateur WHERE matricule = ? AND id != ?");
@@ -448,7 +432,7 @@ try {
             }
         }
 
-        // Construction dynamique de la requête UPDATE
+        // Champs modifiables (sans photo, gérée ailleurs)
         $champsModifiables = [
             'matricule', 'nom', 'sexe', 'nationalite', 'telephone', 'email', 'role',
             'nombreFollowers', 'nombreFollowing', 'noteVendeur', 'soldeVendeur', 'nbVentes', 'statutVendeur'
@@ -459,8 +443,6 @@ try {
         foreach ($champsModifiables as $champ) {
             if (isset($data[$champ])) {
                 $updates[] = "$champ = ?";
-                
-                // Convertir les nombres
                 if (in_array($champ, ['nombreFollowers', 'nombreFollowing', 'nbVentes'])) {
                     $params[] = intval($data[$champ]);
                 } elseif (in_array($champ, ['noteVendeur', 'soldeVendeur'])) {
@@ -488,12 +470,11 @@ try {
                 'timestamp' => date('Y-m-d H:i:s')
             ]);
         } else {
-            error_log("❌ Erreur lors de la mise à jour utilisateur - ID: $id");
             sendJsonResponse(['success' => false, 'error' => 'Erreur lors de la mise à jour'], 500);
         }
     }
     
-    // ==================== DELETE : SUPPRESSION ====================
+    // ==================== DELETE : SUPPRESSION (par GET) ====================
     elseif ($_SERVER['REQUEST_METHOD'] === 'DELETE') {
         if (!isset($_GET['id'])) {
             sendJsonResponse(['success' => false, 'error' => "Paramètre 'id' requis"], 400);
@@ -504,17 +485,21 @@ try {
             sendJsonResponse(['success' => false, 'error' => 'ID utilisateur invalide'], 400);
         }
 
-        // Récupérer la photo avant suppression
-        $stmt = $pdo->prepare("SELECT photoProfil FROM Utilisateur WHERE id = ?");
+        // Récupérer photo_key
+        $stmt = $pdo->prepare("SELECT photo_key FROM Utilisateur WHERE id = ?");
         $stmt->execute([$id]);
         $utilisateur = $stmt->fetch(PDO::FETCH_ASSOC);
 
-        // Supprimer le fichier photo s'il existe
-        if ($utilisateur && !empty($utilisateur['photoProfil'])) {
-            $filePath = __DIR__ . '/' . $utilisateur['photoProfil'];
-            if (file_exists($filePath)) {
-                unlink($filePath);
-                error_log("🗑️ Photo utilisateur supprimée - Chemin: $filePath");
+        // Supprimer la photo de R2
+        if ($utilisateur && !empty($utilisateur['photo_key'])) {
+            try {
+                $s3Client->deleteObject([
+                    'Bucket' => CLOUDFLARE_BUCKET,
+                    'Key'    => $utilisateur['photo_key']
+                ]);
+                error_log("✅ Photo R2 supprimée: " . $utilisateur['photo_key']);
+            } catch (AwsException $e) {
+                error_log("⚠️ Erreur suppression R2: " . $e->getMessage());
             }
         }
 
@@ -530,12 +515,10 @@ try {
                 'timestamp' => date('Y-m-d H:i:s')
             ]);
         } else {
-            error_log("❌ Utilisateur non trouvé pour suppression - ID: $id");
             sendJsonResponse(['success' => false, 'error' => "Utilisateur non trouvé"], 404);
         }
     }
     
-    // ==================== MÉTHODE NON AUTORISÉE ====================
     else {
         sendJsonResponse(['success' => false, 'error' => 'Méthode non autorisée'], 405);
     }

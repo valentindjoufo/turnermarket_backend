@@ -1,13 +1,11 @@
 <?php
 /**
  * get_events.php - Récupérer les événements depuis la base de données
- * Version avec connexion PostgreSQL via config.php
+ * Version compatible PostgreSQL (noms en minuscules)
  */
 
-// 📦 Inclusion de la configuration (connexion PDO PostgreSQL)
 require_once 'config.php';
 
-// 🚦 Configuration des headers CORS
 header("Access-Control-Allow-Origin: *");
 header("Access-Control-Allow-Methods: GET, POST, OPTIONS, PUT, DELETE");
 header("Access-Control-Allow-Headers: Content-Type, Authorization, ngrok-skip-browser-warning, X-Requested-With");
@@ -19,12 +17,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
 }
 
 try {
-    // 💾 Vérification que la connexion PDO est bien disponible
     if (!isset($pdo) || !($pdo instanceof PDO)) {
         throw new Exception("Connexion à la base de données non disponible");
     }
 
-    // 📅 Récupérer les événements actifs
+    // Requête avec noms en minuscules (conformité PostgreSQL)
     $stmt = $pdo->prepare("
         SELECT 
             id,
@@ -34,8 +31,8 @@ try {
             type,
             couleur,
             actif,
-            dateCreation
-        FROM Evenement 
+            datecreation
+        FROM evenement 
         WHERE actif = TRUE
         ORDER BY date_evenement ASC
     ");
@@ -45,7 +42,7 @@ try {
 
     error_log("✅ Événements récupérés: " . count($events));
 
-    // 📋 Formater la réponse
+    // Formater la réponse en conservant les clés attendues par le frontend
     $formattedEvents = array_map(function($event) {
         return [
             'id' => (int)$event['id'],
@@ -55,7 +52,7 @@ try {
             'type' => $event['type'],
             'couleur' => $event['couleur'],
             'actif' => (bool)$event['actif'],
-            'dateCreation' => $event['dateCreation']
+            'dateCreation' => $event['datecreation'] // conversion pour garder la casse attendue
         ];
     }, $events);
 
@@ -67,9 +64,7 @@ try {
     ], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
 
 } catch (PDOException $e) {
-    // ❌ Erreur de base de données
     error_log("❌ ERREUR PDO GET_EVENTS: " . $e->getMessage());
-    
     http_response_code(500);
     echo json_encode([
         "success" => false,
@@ -79,9 +74,7 @@ try {
     ], JSON_UNESCAPED_UNICODE);
     
 } catch (Exception $e) {
-    // ❌ Autres erreurs
     error_log("❌ ERREUR GET_EVENTS: " . $e->getMessage());
-    
     http_response_code(400);
     echo json_encode([
         "success" => false,

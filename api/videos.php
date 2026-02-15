@@ -1,7 +1,8 @@
 <?php
 // Inclure les configurations
 require_once 'config.php';
-require_once 'cloudflare-config.php';
+require_once __DIR__ . '/../vendor/autoload.php';
+require_once __DIR__ . '/cloudflare-config.php';
 
 use Aws\S3\S3Client;
 
@@ -18,7 +19,6 @@ error_log("Méthode: " . $_SERVER['REQUEST_METHOD']);
 error_log("URL: " . $_SERVER['REQUEST_URI']);
 error_log("========================================");
 
-// Répondre aux requêtes pré-vol CORS (OPTIONS)
 if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
     http_response_code(200);
     exit();
@@ -97,12 +97,16 @@ function generateCloudflareVideoUrl($objectKey) {
     return generateCloudflareUrl($objectKey);
 }
 
-// Méthode de la requête
+// Récupération des colonnes de la table video (pour les vérifications dynamiques)
+function getVideoTableColumns($pdo) {
+    $stmt = $pdo->query("SELECT column_name FROM information_schema.columns WHERE table_name = 'video'");
+    return $stmt->fetchAll(PDO::FETCH_COLUMN);
+}
+
 $method = $_SERVER['REQUEST_METHOD'];
 
 // ========== GET - Récupérer les vidéos ==========
 if ($method === 'GET') {
-    // Vérifie que produitId est présent
     if (!isset($_GET['produitId'])) {
         error_log("❌ Paramètre produitId manquant");
         http_response_code(400);
@@ -114,7 +118,6 @@ if ($method === 'GET') {
     error_log("📋 Recherche vidéos pour produitId: $produitId");
     
     try {
-        // 1. Récupérer toutes les vidéos du produit
         $stmt = $pdo->prepare("
             SELECT 
                 id,
@@ -142,19 +145,17 @@ if ($method === 'GET') {
             exit;
         }
         
-        // 2. Convertir les URLs Cloudflare si nécessaire
+        // Convertir les URLs Cloudflare si nécessaire
         foreach ($videos as &$video) {
-            // Si l'URL est une clé R2, la convertir en URL complète
             if (!empty($video['url']) && !preg_match('/^https?:\/\//', $video['url'])) {
                 $video['url'] = generateCloudflareVideoUrl($video['url']);
             }
-            
             if (!empty($video['preview_url']) && !preg_match('/^https?:\/\//', $video['preview_url'])) {
                 $video['preview_url'] = generateCloudflareVideoUrl($video['preview_url']);
             }
         }
         
-        // 3. Grouper les vidéos par titre de base
+        // Grouper les vidéos par titre de base (même logique que l'original)
         $groupedVideos = [];
         
         foreach ($videos as $video) {
@@ -163,7 +164,6 @@ if ($method === 'GET') {
             $segmentNumber = getSegmentNumber($video['titre']);
             $isPreview = strpos($video['titre'], 'Aperçu gratuit') !== false;
             
-            // Si c'est une vidéo simple ou la première occurrence d'une vidéo segmentée
             if (!$isSegmented || !isset($groupedVideos[$baseTitle])) {
                 $groupedVideos[$baseTitle] = [
                     'id' => $video['id'],
@@ -181,7 +181,6 @@ if ($method === 'GET') {
                 ];
             }
             
-            // Si c'est un segment, l'ajouter à la liste des segments
             if ($isSegmented) {
                 $segmentData = [
                     'id' => $video['id'],
@@ -193,27 +192,21 @@ if ($method === 'GET') {
                     'duree' => $video['duree'],
                     'ordre' => $video['ordre']
                 ];
-                
                 $groupedVideos[$baseTitle]['segments'][] = $segmentData;
                 $groupedVideos[$baseTitle]['segment_count'] = count($groupedVideos[$baseTitle]['segments']);
             }
         }
         
-        // 4. Traiter chaque groupe pour trier les segments et définir les propriétés
+        // Traiter chaque groupe pour trier les segments et définir les propriétés
         $finalVideos = [];
-        
         foreach ($groupedVideos as $baseTitle => $videoData) {
-            // Si c'est une vidéo segmentée avec des segments
             if ($videoData['is_segmented'] && !empty($videoData['segments'])) {
-                // Trier les segments par numéro
                 usort($videoData['segments'], function($a, $b) {
                     return $a['segment_number'] - $b['segment_number'];
                 });
                 
-                // Déterminer si la vidéo a des aperçus
                 $hasPreviewSegments = false;
                 $hasFullSegments = false;
-                
                 foreach ($videoData['segments'] as $segment) {
                     if ($segment['is_preview']) {
                         $hasPreviewSegments = true;
@@ -221,7 +214,6 @@ if ($method === 'GET') {
                         $hasFullSegments = true;
                     }
                 }
-                
                 $videoData['has_preview'] = $hasPreviewSegments;
                 
                 // Définir l'URL principale comme premier segment non-preview
@@ -233,7 +225,6 @@ if ($method === 'GET') {
                         break;
                     }
                 }
-                
                 if (!$mainUrlSet && !empty($videoData['segments'])) {
                     $videoData['url'] = $videoData['segments'][0]['url'];
                 }
@@ -254,33 +245,27 @@ if ($method === 'GET') {
                         }
                     }
                 }
-                
                 if ($totalDuration > 0) {
                     $videoData['duree'] = formatDuration($totalDuration);
                 }
             }
-            
             $finalVideos[] = $videoData;
         }
         
-        // 5. Trier les vidéos finales par ordre
+        // Trier les vidéos finales par ordre
         usort($finalVideos, function($a, $b) {
             return $a['ordre'] - $b['ordre'];
         });
         
         error_log("✅ Envoi de " . count($finalVideos) . " vidéo(s) au client");
-        
-        // 6. Retourner les données
         echo json_encode($finalVideos, JSON_UNESCAPED_UNICODE | JSON_PRETTY_PRINT);
         
     } catch (PDOException $e) {
         error_log("❌ Erreur SQL: " . $e->getMessage());
-        error_log("❌ Stack trace: " . $e->getTraceAsString());
         http_response_code(500);
         echo json_encode([
             'error' => 'Erreur lors de la récupération des vidéos', 
-            'details' => $e->getMessage(),
-            'sql_error' => true
+            'details' => $e->getMessage()
         ]);
     } catch (Exception $e) {
         error_log("❌ Erreur générale: " . $e->getMessage());
@@ -303,7 +288,7 @@ if ($method === 'DELETE') {
     error_log("🗑️ Tentative suppression vidéo ID: $id");
 
     try {
-        // 1. Récupérer les informations de la vidéo à supprimer
+        // Récupérer les informations de la vidéo à supprimer
         $stmt = $pdo->prepare("SELECT titre, url, preview_url, produitId FROM video WHERE id = ?");
         $stmt->execute([$id]);
         $video = $stmt->fetch();
@@ -319,14 +304,16 @@ if ($method === 'DELETE') {
         $produitId = $video['produitId'];
         $baseTitle = getBaseTitle($titre);
         
-        // 2. Récupérer tous les segments liés (si vidéo segmentée)
+        // Récupérer tous les segments liés (si vidéo segmentée)
+        // En PostgreSQL, on utilise split_part pour extraire la partie avant " - "
+        // et LIKE avec concaténation via ||
         $allSegmentsStmt = $pdo->prepare("
             SELECT id, titre, url, preview_url 
             FROM video 
             WHERE produitId = ? 
             AND (
-                TRIM(SUBSTRING_INDEX(titre, ' - ', 1)) = ?
-                OR titre LIKE CONCAT(?, ' - %')
+                split_part(titre, ' - ', 1) = ?
+                OR titre LIKE ? || ' - %'
                 OR titre = ?
             )
         ");
@@ -336,18 +323,18 @@ if ($method === 'DELETE') {
         
         error_log("📊 Recherche segments pour: '$baseTitle', trouvés: " . count($allSegments));
         
-        // 3. Supprimer tous les fichiers physiques (Cloudflare R2 + local)
+        // Supprimer tous les fichiers physiques
         foreach ($allSegments as $segment) {
             cleanVideoFiles($segment['url'], $segment['preview_url']);
         }
         
-        // 4. Supprimer toutes les entrées en BDD
+        // Supprimer toutes les entrées en BDD
         $deleteStmt = $pdo->prepare("
             DELETE FROM video 
             WHERE produitId = ? 
             AND (
-                TRIM(SUBSTRING_INDEX(titre, ' - ', 1)) = ?
-                OR titre LIKE CONCAT(?, ' - %')
+                split_part(titre, ' - ', 1) = ?
+                OR titre LIKE ? || ' - %'
                 OR titre = ?
             )
         ");
@@ -416,15 +403,15 @@ if ($method === 'PUT') {
                 FROM video 
                 WHERE produitId = ? 
                 AND (
-                    TRIM(SUBSTRING_INDEX(titre, ' - ', 1)) = ?
-                    OR titre LIKE CONCAT(?, ' - %')
+                    split_part(titre, ' - ', 1) = ?
+                    OR titre LIKE ? || ' - %'
                 )
                 ORDER BY 
                     CASE 
                         WHEN titre LIKE '%Aperçu gratuit%' THEN 1
                         ELSE 0 
                     END,
-                    CAST(SUBSTRING_INDEX(SUBSTRING_INDEX(titre, 'Partie ', -1), ' ', 1) AS UNSIGNED)
+                    CAST(split_part(split_part(titre, 'Partie ', 2), ' ', 1) AS INTEGER)
             ");
             
             $allSegmentsStmt->execute([$produitId, $baseOriginalTitle, $baseOriginalTitle]);
@@ -449,7 +436,6 @@ if ($method === 'PUT') {
                     $newSegmentTitle = $newBaseTitle;
                 }
                 
-                // Mettre à jour ce segment
                 $updateStmt = $pdo->prepare("UPDATE video SET titre = ? WHERE id = ?");
                 $updateStmt->execute([$newSegmentTitle, $segmentId]);
                 
@@ -463,9 +449,8 @@ if ($method === 'PUT') {
             // Vidéo normale (non segmentée)
             $titre = trim($input['titre']);
             
-            // Vérifier quelles colonnes existent dans la table
-            $checkColumns = $pdo->query("DESCRIBE video");
-            $columns = $checkColumns->fetchAll(PDO::FETCH_COLUMN);
+            // Récupérer les colonnes de la table
+            $columns = getVideoTableColumns($pdo);
             
             $updateFields = ['titre = ?'];
             $params = [$titre];
@@ -491,8 +476,7 @@ if ($method === 'PUT') {
                 $params[] = intval($input['ordre']);
             }
 
-            $params[] = $id; // Pour le WHERE id = ?
-            
+            $params[] = $id;
             $sql = "UPDATE video SET " . implode(', ', $updateFields) . " WHERE id = ?";
             $stmt = $pdo->prepare($sql);
             $stmt->execute($params);
@@ -520,9 +504,7 @@ if ($method === 'POST') {
     }
 
     try {
-        // Vérifier quelles colonnes existent dans la table
-        $checkColumns = $pdo->query("DESCRIBE video");
-        $columns = $checkColumns->fetchAll(PDO::FETCH_COLUMN);
+        $columns = getVideoTableColumns($pdo);
         
         $titre = trim($input['titre']);
         $produitId = intval($input['produitId']);
@@ -538,13 +520,13 @@ if ($method === 'POST') {
         }
         
         $insertFields = ["titre", "ordre", "produitId"];
-        $insertValues = ["?", "?", "?"];
+        $insertPlaceholders = ["?", "?", "?"];
         $params = [$titre, $ordre, $produitId];
         
         // Ajouter l'URL si elle existe
         if ($urlToStore) {
             $insertFields[] = "url";
-            $insertValues[] = "?";
+            $insertPlaceholders[] = "?";
             $params[] = $urlToStore;
         }
         
@@ -553,25 +535,25 @@ if ($method === 'POST') {
             $previewUrl = trim($input['preview_url']);
             $previewKey = extractObjectKeyFromUrl($previewUrl);
             $insertFields[] = "preview_url";
-            $insertValues[] = "?";
+            $insertPlaceholders[] = "?";
             $params[] = $previewKey ?: $previewUrl;
         }
         
         if (in_array('duree', $columns) && isset($input['duree'])) {
             $insertFields[] = "duree";
-            $insertValues[] = "?";
+            $insertPlaceholders[] = "?";
             $params[] = trim($input['duree']);
         }
         if (in_array('description', $columns) && isset($input['description'])) {
             $insertFields[] = "description";
-            $insertValues[] = "?";
+            $insertPlaceholders[] = "?";
             $params[] = trim($input['description']);
         }
 
         $insertFieldsStr = implode(", ", $insertFields);
-        $insertValuesStr = implode(", ", $insertValues);
+        $insertPlaceholdersStr = implode(", ", $insertPlaceholders);
 
-        $sql = "INSERT INTO video ($insertFieldsStr) VALUES ($insertValuesStr)";
+        $sql = "INSERT INTO video ($insertFieldsStr) VALUES ($insertPlaceholdersStr)";
         $stmt = $pdo->prepare($sql);
         $stmt->execute($params);
 

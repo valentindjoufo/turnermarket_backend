@@ -1,6 +1,13 @@
-<?php 
-// Inclure la configuration de connexion à la base de données
-require_once 'config.php';
+<?php
+// api/commentaires.php
+// Gestion des commentaires avec upload de fichiers (audio, image) vers Cloudflare R2
+
+require_once __DIR__ . '/../vendor/autoload.php';
+require_once __DIR__ . '/config.php';
+require_once __DIR__ . '/cloudflare-config.php';
+
+use Aws\S3\S3Client;
+use Aws\Exception\AwsException;
 
 header('Content-Type: application/json');
 header("Access-Control-Allow-Origin: *");
@@ -11,171 +18,118 @@ if (isset($_SERVER['HTTP_NGROK_SKIP_BROWSER_WARNING'])) {
     header("ngrok-skip-browser-warning: true");
 }
 
-// CORS preflight
 if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
     http_response_code(200);
     exit();
 }
 
-// Configuration de debug
 error_reporting(E_ALL);
 ini_set('display_errors', 1);
 
-// La variable $pdo est déjà définie dans config.php
-// Vérifier si la connexion existe
+// Vérification de la connexion PDO (déjà dans config.php)
 if (!isset($pdo) || !($pdo instanceof PDO)) {
-    // Si config.php n'a pas créé $pdo, créer la connexion ici
-    $databaseUrl = getenv("DATABASE_URL");
-    if (!$databaseUrl) {
-        http_response_code(500);
-        echo json_encode([
-            'success' => false,
-            'message' => 'DATABASE_URL non définie'
-        ]);
-        exit;
-    }
-
-    $parsed = parse_url($databaseUrl);
-    $host = $parsed['host'] ?? 'localhost';
-    $port = $parsed['port'] ?? 5432;
-    $user = $parsed['user'] ?? 'postgres';
-    $pass = $parsed['pass'] ?? '';
-    $db   = ltrim($parsed['path'] ?? '/defaultdb', '/');
-
-    try {
-        $pdo = new PDO(
-            "pgsql:host=$host;port=$port;dbname=$db",
-            $user,
-            $pass,
-            [
-                PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION,
-                PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
-                PDO::ATTR_TIMEOUT => 10,
-                PDO::ATTR_EMULATE_PREPARES => false,
-            ]
-        );
-        // Configuration PostgreSQL - ajuster le jeu de caractères
-        $pdo->exec("SET NAMES 'UTF8'");
-    } catch (PDOException $e) {
-        http_response_code(503);
-        echo json_encode([
-            'success' => false,
-            'error' => 'Service temporairement indisponible',
-            'message' => 'Impossible de se connecter à la base de données',
-            'debug' => [
-                'error' => $e->getMessage(),
-                'host' => $host,
-                'database' => $db,
-                'user' => $user,
-                'timestamp' => date('Y-m-d H:i:s')
-            ]
-        ]);
-        exit;
-    }
+    http_response_code(503);
+    echo json_encode(['error' => 'Base de données non disponible']);
+    exit;
 }
 
-// Configuration des uploads
-define('UPLOAD_DIR', __DIR__ . '/uploads/');
-define('VOICE_DIR', UPLOAD_DIR . 'voice/');
-define('IMAGE_DIR', UPLOAD_DIR . 'images/');
-define('MAX_FILE_SIZE', 15 * 1024 * 1024); // 15MB pour les fichiers audio/vidéo
+// Initialisation du client S3 pour R2
+$s3Client = new S3Client([
+    'region' => CLOUDFLARE_REGION,
+    'version' => 'latest',
+    'endpoint' => CLOUDFLARE_ENDPOINT,
+    'credentials' => [
+        'key' => CLOUDFLARE_ACCESS_KEY,
+        'secret' => CLOUDFLARE_SECRET_KEY,
+    ],
+    'use_path_style_endpoint' => true,
+    'signature_version' => 'v4',
+]);
 
-// Créer les dossiers s'ils n'existent pas
-if (!is_dir(UPLOAD_DIR)) mkdir(UPLOAD_DIR, 0755, true);
-if (!is_dir(VOICE_DIR)) mkdir(VOICE_DIR, 0755, true);
-if (!is_dir(IMAGE_DIR)) mkdir(IMAGE_DIR, 0755, true);
+define('MAX_FILE_SIZE', 15 * 1024 * 1024); // 15MB (identique à avant)
 
-// Fonction upload
-function uploadFile($file, $type = 'voice') {
-    $uploadDir = ($type === 'voice') ? VOICE_DIR : IMAGE_DIR;
-    
-    $allowedTypes = ($type === 'voice') 
-        ? [
-            'audio/mp4', 'audio/mpeg', 'audio/wav', 'audio/webm', 'audio/ogg', 
-            'audio/x-m4a', 'audio/m4a', 'video/mp4', 'audio/aac', 'audio/3gpp',
-            'application/octet-stream'
-          ]
-        : ['image/jpeg', 'image/png', 'image/gif', 'image/webp', 'image/jpg'];
-    
-    error_log("=== UPLOAD FILE DEBUG ===");
-    error_log("File name: " . $file['name']);
-    error_log("File size: " . $file['size']);
-    error_log("File error: " . $file['error']);
-    error_log("File type reported: " . ($file['type'] ?? 'non défini'));
-    
+// Fonction d'upload vers R2
+function uploadToR2($file, $type, $s3Client) {
+    // $type : 'voice' ou 'image'
     if ($file['error'] !== UPLOAD_ERR_OK) {
         throw new Exception('Erreur upload: Code ' . $file['error']);
     }
-    
     if ($file['size'] > MAX_FILE_SIZE) {
         throw new Exception('Fichier trop volumineux: ' . round($file['size'] / (1024*1024), 2) . ' MB');
     }
-    
+
+    // Détection du type MIME réel
     $finfo = finfo_open(FILEINFO_MIME_TYPE);
-    $detectedMimeType = finfo_file($finfo, $file['tmp_name']);
+    $detectedMime = finfo_file($finfo, $file['tmp_name']);
     finfo_close($finfo);
-    
-    error_log("MIME type détecté: " . $detectedMimeType);
-    
-    $pathInfo = pathinfo($file['name']);
-    $extension = isset($pathInfo['extension']) ? strtolower($pathInfo['extension']) : '';
-    error_log("Extension originale: " . $extension);
-    
-    $isValidType = false;
-    $finalExtension = '';
-    
+
+    // Vérification des types autorisés (basée sur les constantes de cloudflare-config.php)
+    $allowedMimes = ($type === 'voice') 
+        ? ['audio/mp4', 'audio/mpeg', 'audio/wav', 'audio/webm', 'audio/ogg', 
+           'audio/x-m4a', 'audio/m4a', 'video/mp4', 'audio/aac', 'audio/3gpp',
+           'application/octet-stream']
+        : ['image/jpeg', 'image/png', 'image/gif', 'image/webp', 'image/jpg'];
+
+    if (!in_array($detectedMime, $allowedMimes)) {
+        throw new Exception('Type de fichier non autorisé. MIME détecté: ' . $detectedMime);
+    }
+
+    // Génération d'une clé unique pour R2
+    $extension = '';
     if ($type === 'voice') {
-        $validExtensions = ['mp4', 'm4a', 'wav', 'mp3', 'ogg', 'webm', 'aac', '3gp'];
-        $isValidType = in_array($detectedMimeType, $allowedTypes) || 
-                      in_array($extension, $validExtensions) ||
-                      strpos($detectedMimeType, 'audio') !== false ||
-                      strpos($detectedMimeType, 'video') !== false;
-        
-        if (in_array($extension, $validExtensions)) {
-            $finalExtension = '.' . $extension;
-        } else if (strpos($detectedMimeType, 'mp4') !== false || strpos($detectedMimeType, 'm4a') !== false) {
-            $finalExtension = '.m4a';
-        } else if (strpos($detectedMimeType, 'webm') !== false) {
-            $finalExtension = '.webm';
-        } else if (strpos($detectedMimeType, 'wav') !== false) {
-            $finalExtension = '.wav';
-        } else if (strpos($detectedMimeType, 'ogg') !== false) {
-            $finalExtension = '.ogg';
-        } else {
-            $finalExtension = '.m4a';
-        }
+        // On déduit l'extension du type MIME ou on garde celle du fichier original
+        $extMap = [
+            'audio/mp4' => 'm4a',
+            'audio/mpeg' => 'mp3',
+            'audio/wav' => 'wav',
+            'audio/webm' => 'webm',
+            'audio/ogg' => 'ogg',
+            'audio/x-m4a' => 'm4a',
+            'audio/m4a' => 'm4a',
+            'video/mp4' => 'm4a',
+            'audio/aac' => 'aac',
+            'audio/3gpp' => '3gp',
+        ];
+        $extension = $extMap[$detectedMime] ?? 'm4a';
     } else {
-        $isValidType = in_array($detectedMimeType, $allowedTypes) || 
-                      in_array($extension, ['jpg', 'jpeg', 'png', 'gif', 'webp']);
-        $finalExtension = in_array($extension, ['jpg', 'jpeg', 'png', 'gif', 'webp']) ? 
-                         '.' . $extension : '.jpg';
+        $extMap = [
+            'image/jpeg' => 'jpg',
+            'image/jpg' => 'jpg',
+            'image/png' => 'png',
+            'image/gif' => 'gif',
+            'image/webp' => 'webp',
+        ];
+        $extension = $extMap[$detectedMime] ?? 'jpg';
     }
-    
-    if (!$isValidType) {
-        throw new Exception('Type de fichier non autorisé. MIME: ' . $detectedMimeType . ', Extension: ' . $extension);
+
+    $key = 'commentaires/' . $type . '/' . uniqid() . '_' . bin2hex(random_bytes(4)) . '.' . $extension;
+
+    try {
+        // Upload vers R2
+        $s3Client->putObject([
+            'Bucket' => CLOUDFLARE_BUCKET,
+            'Key'    => $key,
+            'SourceFile' => $file['tmp_name'],
+            'ContentType' => $detectedMime,
+        ]);
+
+        $publicUrl = generateCloudflareUrl($key);
+        return [
+            'url' => $publicUrl,
+            'key' => $key
+        ];
+    } catch (AwsException $e) {
+        error_log("Erreur upload R2: " . $e->getMessage());
+        throw new Exception("Échec de l'upload vers le cloud");
     }
-    
-    $fileName = uniqid() . '_' . time() . $finalExtension;
-    $filePath = $uploadDir . $fileName;
-    
-    error_log("Tentative de sauvegarde vers: " . $filePath);
-    
-    if (!move_uploaded_file($file['tmp_name'], $filePath)) {
-        throw new Exception('Impossible de sauvegarder le fichier. Vérifiez les permissions du dossier.');
-    }
-    
-    if (!file_exists($filePath)) {
-        throw new Exception('Le fichier n\'a pas été sauvegardé correctement.');
-    }
-    
-    error_log("Fichier sauvé avec succès: " . $filePath . " (taille: " . filesize($filePath) . " bytes)");
-    
-    // Retourner le chemin relatif uniquement
-    return 'uploads/' . ($type === 'voice' ? 'voice/' : 'images/') . $fileName;
 }
 
 // --- GET requests ---
 if ($_SERVER['REQUEST_METHOD'] === 'GET') {
+    // (inchangé, sauf si vous souhaitez retourner directement les URLs publiques)
+    // Le code existant reste valide car les URLs stockées en base sont déjà complètes
+    // (nous les construirons lors de l'insertion)
+    
     // Compter les messages non lus PAR UTILISATEUR
     if (isset($_GET['count_unread'], $_GET['produitId'], $_GET['utilisateurId'])) {
         $produitId = (int) $_GET['produitId'];
@@ -191,7 +145,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'GET') {
         ");
         $stmt->execute([$utilisateurId, $produitId, $utilisateurId]);
         $result = $stmt->fetch(PDO::FETCH_ASSOC);
-        echo json_encode(['nonLus' => (int)$result['nonlus']]); // PostgreSQL retourne en minuscules
+        echo json_encode(['nonLus' => (int)$result['nonlus']]);
         exit;
     }
 
@@ -230,7 +184,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'GET') {
             u.nom AS utilisateurNom,
             u.role AS utilisateurRole";
     
-    // AJOUT: Inclure le statut "vu" par cet utilisateur
     if ($utilisateurId) {
         $sql .= ",
             CASE WHEN cv.id IS NOT NULL THEN 1 ELSE 0 END as vu";
@@ -251,7 +204,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'GET') {
         FROM Commentaire c
         INNER JOIN Utilisateur u ON c.utilisateurId = u.id";
     
-    // AJOUT: Jointure avec la table commentaire_vus
     if ($utilisateurId) {
         $sql .= " 
         LEFT JOIN commentaire_vus cv ON c.id = cv.commentaire_id AND cv.utilisateur_id = :utilisateurId";
@@ -273,15 +225,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'GET') {
 
     foreach ($commentaires as &$commentaire) {
         $commentaire['id'] = (int)$commentaire['id'];
-        $commentaire['utilisateurId'] = (int)$commentaire['utilisateurid']; // PostgreSQL retourne en minuscules
+        $commentaire['utilisateurId'] = (int)$commentaire['utilisateurid'];
         
-        // CORRIGÉ: Le statut "vu" est maintenant spécifique à l'utilisateur
         if (isset($commentaire['vu'])) {
             $commentaire['vu'] = (bool)$commentaire['vu'];
         }
         
-        if ($commentaire['utilisateurrole'] === 'admin') { // minuscules
-            $commentaire['utilisateurnom'] = 'Admin'; // minuscules
+        if ($commentaire['utilisateurrole'] === 'admin') {
+            $commentaire['utilisateurnom'] = 'Admin';
         }
         unset($commentaire['utilisateurrole']);
         
@@ -290,26 +241,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'GET') {
             $commentaire['replyTo'] = $commentaire['replyto'] ? (int)$commentaire['replyto'] : null;
             $commentaire['voiceDuration'] = $commentaire['voiceduration'] ? (int)$commentaire['voiceduration'] : null;
             $commentaire['isEdited'] = (bool)$commentaire['isedited'];
-            
-            // SOLUTION 1 APPLIQUÉE: Retourner uniquement le chemin relatif
-            if ($commentaire['voiceuri']) {
-                $fullPath = __DIR__ . '/' . $commentaire['voiceuri'];
-                if (!file_exists($fullPath)) {
-                    error_log("Fichier vocal manquant: " . $fullPath);
-                    $commentaire['voiceUri'] = null;
-                } else {
-                    $commentaire['voiceUri'] = $commentaire['voiceuri'];
-                }
-            }
-            if ($commentaire['imageuri']) {
-                $fullPath = __DIR__ . '/' . $commentaire['imageuri'];
-                if (!file_exists($fullPath)) {
-                    error_log("Fichier image manquant: " . $fullPath);
-                    $commentaire['imageUri'] = null;
-                } else {
-                    $commentaire['imageUri'] = $commentaire['imageuri'];
-                }
-            }
+            // Les URLs sont déjà complètes, pas besoin de vérifier l'existence locale
+            // (on peut conserver les URLs telles quelles)
         }
     }
 
@@ -320,11 +253,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'GET') {
 // --- POST requests ---
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     error_log("=== POST REQUEST DEBUG ===");
-    error_log("Content-Type: " . ($_SERVER['CONTENT_TYPE'] ?? 'non défini'));
-    error_log("POST data: " . print_r($_POST, true));
-    error_log("FILES data: " . print_r($_FILES, true));
 
-    // CORRIGÉ: Marquer comme lus PAR UTILISATEUR
+    // Marquer comme lus (inchangé)
     if (isset($_GET['marquer_vus'])) {
         $input = json_decode(file_get_contents('php://input'), true);
         if (!isset($input['utilisateurId']) || !is_numeric($input['utilisateurId'])) {
@@ -337,8 +267,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         try {
             if (isset($input['produitId']) && is_numeric($input['produitId'])) {
                 $produitId = (int) $input['produitId'];
-                
-                // CORRIGÉ: Récupérer les commentaires non lus pour ce produit
                 $sql = "SELECT c.id 
                         FROM Commentaire c 
                         LEFT JOIN commentaire_vus cv ON c.id = cv.commentaire_id AND cv.utilisateur_id = ?
@@ -349,8 +277,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $stmt->execute([$utilisateurId, $produitId, $utilisateurId]);
                 $commentairesNonLus = $stmt->fetchAll(PDO::FETCH_COLUMN);
                 
-                // CORRIGÉ: Marquer chaque commentaire comme lu pour cet utilisateur
-                // PostgreSQL: Utiliser ON CONFLICT au lieu de INSERT IGNORE
                 $insertSql = "INSERT INTO commentaire_vus (commentaire_id, utilisateur_id, date_vue) 
                               VALUES (?, ?, CURRENT_TIMESTAMP) 
                               ON CONFLICT (commentaire_id, utilisateur_id) DO NOTHING";
@@ -362,7 +288,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 
                 echo json_encode(['success' => true, 'marques' => count($commentairesNonLus)]);
             } else {
-                // Marquer tous les commentaires non lus comme lus pour cet utilisateur
+                // Marquer tous
                 $sql = "SELECT c.id 
                         FROM Commentaire c 
                         LEFT JOIN commentaire_vus cv ON c.id = cv.commentaire_id AND cv.utilisateur_id = ?
@@ -399,8 +325,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $type = 'text';
     $replyTo = null;
     $voiceUri = null;
+    $voiceKey = null;
     $voiceDuration = null;
     $imageUri = null;
+    $imageKey = null;
     
     if (strpos($contentType, 'multipart/form-data') !== false || !empty($_FILES)) {
         $produitId = $_POST['produitId'] ?? null;
@@ -411,28 +339,26 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         
         try {
             if (isset($_FILES['voiceFile']) && $_FILES['voiceFile']['error'] !== UPLOAD_ERR_NO_FILE) {
-                error_log("=== TRAITEMENT FICHIER VOCAL ===");
-                if ($_FILES['voiceFile']['error'] !== UPLOAD_ERR_OK) {
-                    throw new Exception('Erreur upload vocal: ' . $_FILES['voiceFile']['error']);
-                }
-                $voiceUri = uploadFile($_FILES['voiceFile'], 'voice');
+                error_log("=== TRAITEMENT FICHIER VOCAL R2 ===");
+                $uploadResult = uploadToR2($_FILES['voiceFile'], 'voice', $s3Client);
+                $voiceUri = $uploadResult['url'];
+                $voiceKey = $uploadResult['key'];
                 $voiceDuration = intval($_POST['voiceDuration'] ?? 15);
                 $type = 'voice';
-                error_log("Fichier vocal traité: " . $voiceUri . " (durée: " . $voiceDuration . "s)");
+                error_log("Fichier vocal uploadé vers R2: " . $voiceKey);
             }
             
             if (isset($_FILES['imageFile']) && $_FILES['imageFile']['error'] !== UPLOAD_ERR_NO_FILE) {
-                error_log("=== TRAITEMENT FICHIER IMAGE ===");
-                if ($_FILES['imageFile']['error'] !== UPLOAD_ERR_OK) {
-                    throw new Exception('Erreur upload image: ' . $_FILES['imageFile']['error']);
-                }
-                $imageUri = uploadFile($_FILES['imageFile'], 'image');
+                error_log("=== TRAITEMENT FICHIER IMAGE R2 ===");
+                $uploadResult = uploadToR2($_FILES['imageFile'], 'image', $s3Client);
+                $imageUri = $uploadResult['url'];
+                $imageKey = $uploadResult['key'];
                 $type = 'image';
-                error_log("Fichier image traité: " . $imageUri);
+                error_log("Fichier image uploadé vers R2: " . $imageKey);
             }
         } catch (Exception $e) {
-            error_log("=== ERREUR UPLOAD ===");
-            error_log("Erreur upload: " . $e->getMessage());
+            error_log("=== ERREUR UPLOAD R2 ===");
+            error_log($e->getMessage());
             http_response_code(500);
             echo json_encode(['error' => 'Erreur upload: ' . $e->getMessage()]);
             exit;
@@ -440,13 +366,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         
     } else {
         $input = json_decode(file_get_contents('php://input'), true);
-        
         if (!$input) {
             http_response_code(400);
             echo json_encode(['error' => 'Données JSON invalides']);
             exit;
         }
-        
         $produitId = $input['produitId'] ?? null;
         $utilisateurId = $input['utilisateurId'] ?? null;
         $texte = $input['texte'] ?? '';
@@ -467,6 +391,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     }
 
     try {
+        // Vérification utilisateur
         $stmtUser = $pdo->prepare("SELECT nom FROM Utilisateur WHERE id = ?");
         $stmtUser->execute([$utilisateurId]);
         $utilisateur = $stmtUser->fetch();
@@ -477,8 +402,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         }
         $utilisateurNom = $utilisateur['nom'];
 
+        // Anti-doublon pour les messages texte
         if ($type === 'text' && !empty($texte)) {
-            // PostgreSQL: Utiliser CURRENT_TIMESTAMP au lieu de NOW()
             $stmt = $pdo->prepare("
                 SELECT COUNT(*) as count 
                 FROM Commentaire 
@@ -487,7 +412,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             ");
             $stmt->execute([$produitId, $utilisateurId, trim($texte)]);
             $recent = $stmt->fetch();
-            
             if ($recent['count'] > 0) {
                 error_log("Doublon détecté - ignoré");
                 http_response_code(200);
@@ -496,20 +420,20 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             }
         }
 
-        // SUPPRIMÉ: Le champ 'vu' n'est plus utilisé dans Commentaire
-        // PostgreSQL: Utiliser CURRENT_TIMESTAMP au lieu de NOW()
+        // Insertion en base (avec les nouvelles colonnes voice_key et image_key)
         $stmt = $pdo->prepare("
             INSERT INTO Commentaire (
                 produitId, utilisateurId, texte, type, reply_to, 
-                voice_uri, voice_duration, image_uri, dateCreation
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                voice_uri, voice_key, voice_duration, image_uri, image_key, dateCreation
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
             RETURNING id
         ");
         
         $result = $stmt->execute([
             $produitId, $utilisateurId, trim($texte), $type, 
             $replyTo ? (int)$replyTo : null,
-            $voiceUri, $voiceDuration ? (int)$voiceDuration : null, $imageUri
+            $voiceUri, $voiceKey, $voiceDuration ? (int)$voiceDuration : null, 
+            $imageUri, $imageKey
         ]);
 
         if (!$result) {
@@ -538,14 +462,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             'message' => 'Commentaire ajouté avec succès'
         ];
 
-        // SOLUTION 1 APPLIQUÉE: Retourner uniquement le chemin relatif
         if ($voiceUri) {
-            $response['voiceUri'] = $voiceUri; // Chemin relatif uniquement
+            $response['voiceUri'] = $voiceUri; // URL publique complète
             $response['voiceDuration'] = $voiceDuration;
         }
-        
         if ($imageUri) {
-            $response['imageUri'] = $imageUri; // Chemin relatif uniquement
+            $response['imageUri'] = $imageUri; // URL publique complète
         }
 
         echo json_encode($response);
@@ -553,7 +475,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     } catch (Exception $e) {
         error_log("=== ERREUR BASE DE DONNÉES ===");
         error_log("Erreur: " . $e->getMessage());
-        error_log("Stack trace: " . $e->getTraceAsString());
         http_response_code(500);
         echo json_encode(['error' => 'Erreur base de données: ' . $e->getMessage()]);
     }
@@ -597,7 +518,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'PUT') {
             exit;
         }
 
-        if ($comment['utilisateurid'] != $utilisateurId) { // minuscules
+        if ($comment['utilisateurid'] != $utilisateurId) {
             http_response_code(403);
             echo json_encode(['error' => 'Vous ne pouvez pas modifier ce commentaire']);
             exit;
@@ -635,33 +556,42 @@ if ($_SERVER['REQUEST_METHOD'] === 'DELETE') {
     }
 
     try {
-        $stmtCheck = $pdo->prepare("SELECT utilisateurId, voice_uri, image_uri FROM Commentaire WHERE id = ?");
+        // Récupérer les clés R2 avant suppression
+        $stmtCheck = $pdo->prepare("SELECT utilisateurId, voice_key, image_key FROM Commentaire WHERE id = ?");
         $stmtCheck->execute([$id]);
         $comment = $stmtCheck->fetch();
 
-        if (!$comment || $comment['utilisateurid'] != $utilisateurId) { // minuscules
+        if (!$comment || $comment['utilisateurid'] != $utilisateurId) {
             http_response_code(403);
             echo json_encode(['error' => 'Permission refusée']);
             exit;
         }
 
-        // Supprimer les fichiers
-        if ($comment['voice_uri']) {
-            $filePath = __DIR__ . '/' . $comment['voice_uri'];
-            if (file_exists($filePath)) {
-                unlink($filePath);
-                error_log("Fichier vocal supprimé: " . $filePath);
+        // Supprimer les fichiers de R2
+        if ($comment['voice_key']) {
+            try {
+                $s3Client->deleteObject([
+                    'Bucket' => CLOUDFLARE_BUCKET,
+                    'Key'    => $comment['voice_key']
+                ]);
+                error_log("Fichier vocal supprimé de R2: " . $comment['voice_key']);
+            } catch (AwsException $e) {
+                error_log("Erreur suppression voice R2: " . $e->getMessage());
             }
         }
-        if ($comment['image_uri']) {
-            $filePath = __DIR__ . '/' . $comment['image_uri'];
-            if (file_exists($filePath)) {
-                unlink($filePath);
-                error_log("Fichier image supprimé: " . $filePath);
+        if ($comment['image_key']) {
+            try {
+                $s3Client->deleteObject([
+                    'Bucket' => CLOUDFLARE_BUCKET,
+                    'Key'    => $comment['image_key']
+                ]);
+                error_log("Fichier image supprimé de R2: " . $comment['image_key']);
+            } catch (AwsException $e) {
+                error_log("Erreur suppression image R2: " . $e->getMessage());
             }
         }
 
-        // CORRIGÉ: Supprimer aussi les entrées dans commentaire_vus
+        // Supprimer les entrées commentaire_vus
         $stmtVus = $pdo->prepare("DELETE FROM commentaire_vus WHERE commentaire_id = ?");
         $stmtVus->execute([$id]);
 
@@ -681,3 +611,4 @@ if ($_SERVER['REQUEST_METHOD'] === 'DELETE') {
 http_response_code(405);
 echo json_encode(['error' => 'Méthode non autorisée']);
 exit;
+?>

@@ -1,13 +1,11 @@
 <?php
 /**
  * marquer_notifications_lues.php - Marquer toutes les notifications comme lues
- * Version avec connexion PostgreSQL via config.php
+ * Version compatible PostgreSQL (noms en minuscules)
  */
 
-// 📦 Inclusion de la configuration (connexion PDO PostgreSQL)
 require_once 'config.php';
 
-// 🚦 Configuration des headers
 header("Access-Control-Allow-Origin: *");
 header("Access-Control-Allow-Methods: POST, OPTIONS");
 header("Access-Control-Allow-Headers: Content-Type");
@@ -19,12 +17,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
 }
 
 try {
-    // 💾 Vérification que la connexion PDO est bien disponible
     if (!isset($pdo) || !($pdo instanceof PDO)) {
         throw new Exception("Connexion à la base de données non disponible");
     }
 
-    // 📥 Récupération des données JSON
     $input = file_get_contents('php://input');
     $data = json_decode($input, true);
 
@@ -41,16 +37,16 @@ try {
     $userId = intval($userId);
     error_log("🔔 Marquer notifications comme lues pour utilisateur ID: $userId");
 
-    // 📝 Mettre à jour les notifications non lues
-    $stmt = $pdo->prepare("UPDATE Notification SET estLu = TRUE WHERE utilisateurId = ? AND estLu = FALSE");
+    // Requête adaptée à PostgreSQL : table en minuscules, colonnes en minuscules
+    $stmt = $pdo->prepare("UPDATE notification SET estlu = TRUE WHERE utilisateurid = ? AND estlu = FALSE");
     $stmt->execute([$userId]);
-    
+
     $rowsUpdated = $stmt->rowCount();
-    
+
     error_log("✅ $rowsUpdated notification(s) marquée(s) comme lue(s) pour utilisateur $userId");
 
     echo json_encode([
-        "success" => true, 
+        "success" => true,
         "message" => "Toutes les notifications marquées comme lues",
         "notifications_mises_a_jour" => $rowsUpdated,
         "user_id" => $userId,
@@ -58,23 +54,18 @@ try {
     ]);
 
 } catch (PDOException $e) {
-    // ❌ Erreur de base de données
     error_log("❌ ERREUR PDO MARQUER NOTIFICATIONS: " . $e->getMessage());
-    
     http_response_code(500);
     echo json_encode([
-        "success" => false, 
+        "success" => false,
         "error" => "Erreur de base de données",
         "debug" => $e->getMessage()
     ]);
-    
 } catch (Exception $e) {
-    // ❌ Autres erreurs
     error_log("❌ ERREUR MARQUER NOTIFICATIONS: " . $e->getMessage());
-    
     http_response_code(400);
     echo json_encode([
-        "success" => false, 
+        "success" => false,
         "error" => $e->getMessage()
     ]);
 }

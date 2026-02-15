@@ -1,19 +1,16 @@
 <?php
 /**
  * notifier_parties.php - API complète de notifications
- * Version avec connexion PostgreSQL via config.php
+ * Version compatible PostgreSQL (noms en minuscules + alias)
  */
 
-// 📦 Inclusion de la configuration (connexion PDO PostgreSQL)
 require_once 'config.php';
 
-// 🚦 Configuration des headers
 header("Access-Control-Allow-Origin: *");
 header("Access-Control-Allow-Methods: POST, OPTIONS");
 header("Access-Control-Allow-Headers: Content-Type, Authorization");
 header("Content-Type: application/json; charset=UTF-8");
 
-// ⏱️ Configuration des timeouts
 set_time_limit(20);
 ini_set('max_execution_time', 20);
 ini_set('display_errors', 0);
@@ -23,7 +20,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
     exit();
 }
 
-// 📤 Fonction de réponse standardisée
 function sendResponse($success, $message, $data = [], $code = 200) {
     http_response_code($code);
     echo json_encode([
@@ -36,12 +32,10 @@ function sendResponse($success, $message, $data = [], $code = 200) {
 }
 
 try {
-    // 💾 Vérification que la connexion PDO est bien disponible
     if (!isset($pdo) || !($pdo instanceof PDO)) {
         throw new Exception("Connexion à la base de données non disponible");
     }
 
-    // 📥 Vérification du contenu
     $contentType = $_SERVER['CONTENT_TYPE'] ?? '';
     if (stripos($contentType, 'application/json') === false) {
         throw new Exception("Content-Type must be application/json");
@@ -57,23 +51,16 @@ try {
         throw new Exception("JSON invalide: " . json_last_error_msg());
     }
 
-    // 🎯 Déterminer le type d'opération
     $action = $data['action'] ?? 'simple';
-
     error_log("=== NOTIFICATION API - Action: $action ===");
 
-    // 🔀 Router vers la fonction appropriée
     switch ($action) {
         case 'simple':
-            // 📧 Notification simple (ancien comportement)
             handleSimpleNotification($data);
             break;
-            
         case 'parties':
-            // 👥 Notifications pour toutes les parties (nouveau)
             handlePartiesNotification($data);
             break;
-            
         default:
             throw new Exception("Action non supportée: $action");
     }
@@ -91,25 +78,26 @@ try {
  */
 function handleSimpleNotification($data) {
     global $pdo;
-    
+
     $utilisateurId = $data['utilisateurId'] ?? null;
     $titre = $data['titre'] ?? null;
     $message = $data['message'] ?? null;
     $type = $data['type'] ?? 'info';
     $lien = $data['lien'] ?? null;
-    
+
     if (!$utilisateurId || !$titre || !$message) {
         throw new Exception("Données incomplètes pour notification simple");
     }
-    
+
+    // Insertion avec noms de colonnes en minuscules (table notification)
     $stmt = $pdo->prepare("
-        INSERT INTO Notification (utilisateurId, titre, message, type, lien, dateCreation, estLu)
+        INSERT INTO notification (utilisateurid, titre, message, type, lien, datecreation, estlu)
         VALUES (?, ?, ?, ?, ?, NOW(), FALSE)
     ");
     $stmt->execute([$utilisateurId, $titre, $message, $type, $lien]);
-    
+
     error_log("✅ Notification simple créée - User: $utilisateurId");
-    
+
     sendResponse(true, "Notification créée avec succès", [
         'notification_id' => $pdo->lastInsertId(),
         'utilisateur_id' => $utilisateurId
@@ -121,29 +109,34 @@ function handleSimpleNotification($data) {
  */
 function handlePartiesNotification($data) {
     global $pdo;
-    
+
     $transactionId = $data['transactionId'] ?? null;
     $type = $data['type'] ?? null;
 
-    // Validation
     if (!$transactionId) {
         throw new Exception("Transaction ID requis");
     }
-    
     if (!$type) {
         throw new Exception("Type de notification requis");
     }
 
-    // Nettoyer les données
     $transactionId = trim($transactionId);
     $type = trim($type);
 
-    // 🔍 Vérifier que la transaction existe
+    // Récupération de la vente avec alias pour conserver la casse utilisée dans le code
     $stmt = $pdo->prepare("
-        SELECT v.*, u.nom as nomClient, u.email as emailClient
-        FROM Vente v 
-        JOIN Utilisateur u ON v.utilisateurId = u.id
-        WHERE v.transactionId = ?
+        SELECT 
+            v.id AS \"id\",
+            v.utilisateurid AS \"utilisateurId\",
+            v.statut AS \"statut\",
+            v.total AS \"total\",
+            v.date AS \"date\",
+            v.dateconfirmation AS \"dateConfirmation\",
+            u.nom AS \"nomClient\",
+            u.email AS \"emailClient\"
+        FROM vente v 
+        JOIN utilisateur u ON v.utilisateurid = u.id
+        WHERE v.transactionid = ?
     ");
     $stmt->execute([$transactionId]);
     $vente = $stmt->fetch(PDO::FETCH_ASSOC);
@@ -154,41 +147,39 @@ function handlePartiesNotification($data) {
 
     error_log("Transaction trouvée - ID: " . $vente['id'] . ", Statut: " . $vente['statut']);
 
-    // 👥 Récupérer les commissions/vendeurs
+    // Récupération des commissions / vendeurs
     $stmtCommissions = $pdo->prepare("
-        SELECT c.*, u.nom as nomVendeur, u.email as emailVendeur
-        FROM Commission c 
-        JOIN Utilisateur u ON c.vendeurId = u.id 
-        WHERE c.venteId = ?
+        SELECT 
+            c.*,
+            u.nom AS \"nomVendeur\",
+            u.email AS \"emailVendeur\"
+        FROM commission c 
+        JOIN utilisateur u ON c.vendeurid = u.id 
+        WHERE c.venteid = ?
     ");
     $stmtCommissions->execute([$vente['id']]);
     $commissions = $stmtCommissions->fetchAll(PDO::FETCH_ASSOC);
 
     error_log("Vendeurs concernés: " . count($commissions));
 
-    // 🚦 Dispatcher selon le type
     $resultats = [];
-    
+
     switch ($type) {
         case 'paiement_confirme':
             $resultats = notifierPaiementConfirme($vente, $commissions);
             break;
-            
         case 'remboursement':
             $motif = $data['motif'] ?? 'Non spécifié';
             $resultats = notifierRemboursement($vente, $commissions, $motif);
             break;
-            
         case 'annulation':
             $motif = $data['motif'] ?? 'Non spécifié';
             $resultats = notifierAnnulation($vente, $commissions, $motif);
             break;
-            
         case 'livraison':
             $details = $data['details'] ?? 'Votre formation est disponible';
             $resultats = notifierLivraison($vente, $commissions, $details);
             break;
-            
         default:
             throw new Exception("Type de notification non supporté: " . $type);
     }
@@ -209,24 +200,24 @@ function handlePartiesNotification($data) {
  */
 function notifierPaiementConfirme($vente, $commissions) {
     global $pdo;
-    
+
     error_log("🔔 Notification: Paiement confirmé");
-    
+
     $envoyees = 0;
     $total = 0;
     $details = [];
-    
+
     $totalCommissionsAdmin = 0;
     foreach ($commissions as $commission) {
-        $totalCommissionsAdmin += $commission['montantAdmin'];
+        $totalCommissionsAdmin += $commission['montantadmin']; // en minuscules car issu de la table commission
     }
 
-    // 1. 📧 Notifier le CLIENT
+    // 1. Notifier le CLIENT
     try {
         $messageClient = "🎉 Votre achat a été confirmé ! Accédez à votre formation.";
-        
+
         $stmt = $pdo->prepare("
-            INSERT INTO Notification (utilisateurId, titre, message, type, lien, dateCreation, estLu)
+            INSERT INTO notification (utilisateurid, titre, message, type, lien, datecreation, estlu)
             VALUES (?, 'Achat confirmé', ?, 'success', '/mes-formations', NOW(), FALSE)
         ");
         $stmt->execute([$vente['utilisateurId'], $messageClient]);
@@ -239,52 +230,51 @@ function notifierPaiementConfirme($vente, $commissions) {
     }
     $total++;
 
-    // 2. 📧 Notifier chaque VENDEUR
+    // 2. Notifier chaque VENDEUR
     foreach ($commissions as $commission) {
         try {
-            // 📚 Récupérer le nom de la formation
+            // Récupérer le titre de la formation
             $stmtProduit = $pdo->prepare("
-                SELECT p.titre 
-                FROM VenteProduit vp
-                JOIN Produit p ON vp.produitId = p.id
-                WHERE vp.venteId = ? AND vp.vendeurId = ?
+                SELECT p.titre
+                FROM venteproduit vp
+                JOIN produit p ON vp.produitid = p.id
+                WHERE vp.venteid = ? AND vp.vendeurid = ?
                 LIMIT 1
             ");
-            $stmtProduit->execute([$vente['id'], $commission['vendeurId']]);
+            $stmtProduit->execute([$vente['id'], $commission['vendeurid']]);
             $produit = $stmtProduit->fetch(PDO::FETCH_ASSOC);
             $titreFormation = $produit ? $produit['titre'] : 'votre formation';
-            
-            // 💰 Message avec le nom de la formation et le prix
-            $messageVendeur = "🎉 Félicitation ! Vous venez de vendre \"$titreFormation\" de " . 
-                            $commission['montantTotal'] . " FCFA avec succès. " .
-                            $commission['montantVendeur'] . " FCFA ont été crédités à votre solde.";
-            
+
+            $messageVendeur = "🎉 Félicitation ! Vous venez de vendre \"$titreFormation\" de " .
+                $commission['montanttotal'] . " FCFA avec succès. " .
+                $commission['montantvendeur'] . " FCFA ont été crédités à votre solde.";
+
             $stmt = $pdo->prepare("
-                INSERT INTO Notification (utilisateurId, titre, message, type, lien, dateCreation, estLu)
+                INSERT INTO notification (utilisateurid, titre, message, type, lien, datecreation, estlu)
                 VALUES (?, 'Vente réussie', ?, 'success', '/vendeur/solde', NOW(), FALSE)
             ");
-            $stmt->execute([$commission['vendeurId'], $messageVendeur]);
+            $stmt->execute([$commission['vendeurid'], $messageVendeur]);
             $envoyees++;
-            $details[] = "vendeur_" . $commission['vendeurId'];
-            error_log("📧 Notification vendeur envoyée: " . $commission['vendeurId']);
+            $details[] = "vendeur_" . $commission['vendeurid'];
+            error_log("📧 Notification vendeur envoyée: " . $commission['vendeurid']);
         } catch (Exception $e) {
-            error_log("⚠️ Erreur notification vendeur " . $commission['vendeurId'] . ": " . $e->getMessage());
-            $details[] = "vendeur_erreur_" . $commission['vendeurId'];
+            error_log("⚠️ Erreur notification vendeur " . $commission['vendeurid'] . ": " . $e->getMessage());
+            $details[] = "vendeur_erreur_" . $commission['vendeurid'];
         }
         $total++;
     }
 
-    // 3. 📧 Notifier les ADMINS
+    // 3. Notifier les ADMINS
     try {
         $messageAdmin = "📈 Nouvelle vente #" . $vente['id'] . " - Commissions admin: " . $totalCommissionsAdmin . " FCFA";
-        
-        $stmtAdmins = $pdo->prepare("SELECT id FROM Utilisateur WHERE role = 'admin' AND etat = 'actif'");
+
+        $stmtAdmins = $pdo->prepare("SELECT id FROM utilisateur WHERE role = 'admin' AND etat = 'actif'");
         $stmtAdmins->execute();
         $admins = $stmtAdmins->fetchAll(PDO::FETCH_ASSOC);
-        
+
         foreach ($admins as $admin) {
             $stmt = $pdo->prepare("
-                INSERT INTO Notification (utilisateurId, titre, message, type, lien, dateCreation, estLu)
+                INSERT INTO notification (utilisateurid, titre, message, type, lien, datecreation, estlu)
                 VALUES (?, 'Nouvelle commission', ?, 'info', '/admin/commissions', NOW(), FALSE)
             ");
             $stmt->execute([$admin['id'], $messageAdmin]);
@@ -311,19 +301,19 @@ function notifierPaiementConfirme($vente, $commissions) {
  */
 function notifierRemboursement($vente, $commissions, $motif) {
     global $pdo;
-    
+
     error_log("🔔 Notification: Remboursement - " . $motif);
-    
+
     $envoyees = 0;
     $total = 0;
     $details = [];
 
-    // 1. 📧 Notifier le CLIENT
+    // 1. Notifier le CLIENT
     try {
         $messageClient = "🔄 Remboursement en cours - Motif: " . $motif . " - Montant: " . $vente['total'] . " FCFA";
-        
+
         $stmt = $pdo->prepare("
-            INSERT INTO Notification (utilisateurId, titre, message, type, lien, dateCreation, estLu)
+            INSERT INTO notification (utilisateurid, titre, message, type, lien, datecreation, estlu)
             VALUES (?, 'Remboursement', ?, 'warning', '/mes-achats', NOW(), FALSE)
         ");
         $stmt->execute([$vente['utilisateurId'], $messageClient]);
@@ -336,37 +326,37 @@ function notifierRemboursement($vente, $commissions, $motif) {
     }
     $total++;
 
-    // 2. 📧 Notifier les VENDEURS
+    // 2. Notifier les VENDEURS
     foreach ($commissions as $commission) {
         try {
-            $messageVendeur = "⚠️ Remboursement client - " . $commission['montantVendeur'] . " FCFA débités - Motif: " . $motif;
-            
+            $messageVendeur = "⚠️ Remboursement client - " . $commission['montantvendeur'] . " FCFA débités - Motif: " . $motif;
+
             $stmt = $pdo->prepare("
-                INSERT INTO Notification (utilisateurId, titre, message, type, lien, dateCreation, estLu)
+                INSERT INTO notification (utilisateurid, titre, message, type, lien, datecreation, estlu)
                 VALUES (?, 'Remboursement client', ?, 'warning', '/vendeur/ventes', NOW(), FALSE)
             ");
-            $stmt->execute([$commission['vendeurId'], $messageVendeur]);
+            $stmt->execute([$commission['vendeurid'], $messageVendeur]);
             $envoyees++;
-            $details[] = "vendeur_" . $commission['vendeurId'];
-            error_log("📧 Notification remboursement vendeur envoyée: " . $commission['vendeurId']);
+            $details[] = "vendeur_" . $commission['vendeurid'];
+            error_log("📧 Notification remboursement vendeur envoyée: " . $commission['vendeurid']);
         } catch (Exception $e) {
-            error_log("⚠️ Erreur notification remboursement vendeur " . $commission['vendeurId'] . ": " . $e->getMessage());
-            $details[] = "vendeur_erreur_" . $commission['vendeurId'];
+            error_log("⚠️ Erreur notification remboursement vendeur " . $commission['vendeurid'] . ": " . $e->getMessage());
+            $details[] = "vendeur_erreur_" . $commission['vendeurid'];
         }
         $total++;
     }
 
-    // 3. 📧 Notifier les ADMINS
+    // 3. Notifier les ADMINS
     try {
         $messageAdmin = "🔄 Remboursement transaction #" . $vente['id'] . " - Motif: " . $motif . " - Montant: " . $vente['total'] . " FCFA";
-        
-        $stmtAdmins = $pdo->prepare("SELECT id FROM Utilisateur WHERE role = 'admin' AND etat = 'actif'");
+
+        $stmtAdmins = $pdo->prepare("SELECT id FROM utilisateur WHERE role = 'admin' AND etat = 'actif'");
         $stmtAdmins->execute();
         $admins = $stmtAdmins->fetchAll(PDO::FETCH_ASSOC);
-        
+
         foreach ($admins as $admin) {
             $stmt = $pdo->prepare("
-                INSERT INTO Notification (utilisateurId, titre, message, type, lien, dateCreation, estLu)
+                INSERT INTO notification (utilisateurid, titre, message, type, lien, datecreation, estlu)
                 VALUES (?, 'Remboursement', ?, 'warning', '/admin/transactions', NOW(), FALSE)
             ");
             $stmt->execute([$admin['id'], $messageAdmin]);
@@ -393,19 +383,19 @@ function notifierRemboursement($vente, $commissions, $motif) {
  */
 function notifierAnnulation($vente, $commissions, $motif) {
     global $pdo;
-    
+
     error_log("🔔 Notification: Annulation - " . $motif);
-    
+
     $envoyees = 0;
     $total = 0;
     $details = [];
 
-    // 1. 📧 Notifier le CLIENT
+    // 1. Notifier le CLIENT
     try {
         $messageClient = "❌ Transaction annulée - Motif: " . $motif;
-        
+
         $stmt = $pdo->prepare("
-            INSERT INTO Notification (utilisateurId, titre, message, type, lien, dateCreation, estLu)
+            INSERT INTO notification (utilisateurid, titre, message, type, lien, datecreation, estlu)
             VALUES (?, 'Transaction annulée', ?, 'error', '/panier', NOW(), FALSE)
         ");
         $stmt->execute([$vente['utilisateurId'], $messageClient]);
@@ -418,37 +408,37 @@ function notifierAnnulation($vente, $commissions, $motif) {
     }
     $total++;
 
-    // 2. 📧 Notifier les VENDEURS
+    // 2. Notifier les VENDEURS
     foreach ($commissions as $commission) {
         try {
             $messageVendeur = "❌ Vente annulée - Motif: " . $motif;
-            
+
             $stmt = $pdo->prepare("
-                INSERT INTO Notification (utilisateurId, titre, message, type, lien, dateCreation, estLu)
+                INSERT INTO notification (utilisateurid, titre, message, type, lien, datecreation, estlu)
                 VALUES (?, 'Vente annulée', ?, 'error', '/vendeur/ventes', NOW(), FALSE)
             ");
-            $stmt->execute([$commission['vendeurId'], $messageVendeur]);
+            $stmt->execute([$commission['vendeurid'], $messageVendeur]);
             $envoyees++;
-            $details[] = "vendeur_" . $commission['vendeurId'];
-            error_log("📧 Notification annulation vendeur envoyée: " . $commission['vendeurId']);
+            $details[] = "vendeur_" . $commission['vendeurid'];
+            error_log("📧 Notification annulation vendeur envoyée: " . $commission['vendeurid']);
         } catch (Exception $e) {
-            error_log("⚠️ Erreur notification annulation vendeur " . $commission['vendeurId'] . ": " . $e->getMessage());
-            $details[] = "vendeur_erreur_" . $commission['vendeurId'];
+            error_log("⚠️ Erreur notification annulation vendeur " . $commission['vendeurid'] . ": " . $e->getMessage());
+            $details[] = "vendeur_erreur_" . $commission['vendeurid'];
         }
         $total++;
     }
 
-    // 3. 📧 Notifier les ADMINS
+    // 3. Notifier les ADMINS
     try {
         $messageAdmin = "❌ Annulation transaction #" . $vente['id'] . " - Motif: " . $motif;
-        
-        $stmtAdmins = $pdo->prepare("SELECT id FROM Utilisateur WHERE role = 'admin' AND etat = 'actif'");
+
+        $stmtAdmins = $pdo->prepare("SELECT id FROM utilisateur WHERE role = 'admin' AND etat = 'actif'");
         $stmtAdmins->execute();
         $admins = $stmtAdmins->fetchAll(PDO::FETCH_ASSOC);
-        
+
         foreach ($admins as $admin) {
             $stmt = $pdo->prepare("
-                INSERT INTO Notification (utilisateurId, titre, message, type, lien, dateCreation, estLu)
+                INSERT INTO notification (utilisateurid, titre, message, type, lien, datecreation, estlu)
                 VALUES (?, 'Annulation', ?, 'error', '/admin/transactions', NOW(), FALSE)
             ");
             $stmt->execute([$admin['id'], $messageAdmin]);
@@ -475,19 +465,19 @@ function notifierAnnulation($vente, $commissions, $motif) {
  */
 function notifierLivraison($vente, $commissions, $details) {
     global $pdo;
-    
+
     error_log("🔔 Notification: Livraison - " . $details);
-    
+
     $envoyees = 0;
     $total = 0;
     $resultats = [];
 
-    // Notifier uniquement le CLIENT pour la livraison
+    // Notifier uniquement le CLIENT
     try {
         $messageClient = "📦 " . $details;
-        
+
         $stmt = $pdo->prepare("
-            INSERT INTO Notification (utilisateurId, titre, message, type, lien, dateCreation, estLu)
+            INSERT INTO notification (utilisateurid, titre, message, type, lien, datecreation, estlu)
             VALUES (?, 'Formation disponible', ?, 'info', '/mes-formations', NOW(), FALSE)
         ");
         $stmt->execute([$vente['utilisateurId'], $messageClient]);
